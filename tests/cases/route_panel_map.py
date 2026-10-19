@@ -680,10 +680,10 @@ def route_context_hint():
         text, row = run()
         check('约 20 万' in text and row['ctx'] == 200000, text)
         check('新档位' in text and '新事' in text and 'aiw handoff --template' in text and
-              'aiw handoff <文件>' in text and text.count('[上下文]') == 1, text)
+              'aiw handoff <文件>' in text and '/compact' not in text and text.count('[上下文]') == 1, text)
         text, row = run()
         check(text.count('[上下文]') == 1 and '新事' in text and 'aiw handoff' in text and
-              '新档位' not in text and '--template' not in text, '同 bucket 未仅输出条件提示: ' + text)
+              '/compact' not in text and '新档位' not in text and '--template' not in text, '同 bucket 未仅输出条件提示: ' + text)
         check((root / 'state/context-hints/fixture-session').read_text() == '2', '条件提示改变档位标记')
         write(299999)
         text, row = run()

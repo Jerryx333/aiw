@@ -54,7 +54,7 @@ aiw doctor
 
 默认不拆会话。UserPromptSubmit 钩子只看 Claude 主会话（payload 没有 `turn_id`），从 transcript 尾部读取最后一条带 usage 的 assistant 记录；上下文 token = input_tokens + cache_read_input_tokens + cache_creation_input_tokens。先读末尾 512KB，找不到再扩到最多 4MB；读取或状态异常静默跳过，不阻断用户消息，不调用模型判断。
 
-`AIW_HANDOFF_AT` 默认 `200000`，设 `0` 关闭提醒；门槛或步长为负数、非法值时也不提示。`AIW_HANDOFF_STEP` 默认 `100000`。达到阈值后按 `ctx // step` 分桶，同一会话只在 bucket 比上次提醒更大时发档位提醒，万位四舍五入显示；未触发档位提醒时仍发简短条件提示。每次最多注入一行 `[上下文]`，不超过 120 字符；档位提醒合并条件提示的意思，由主会话判断本条是否是与当前工作无关的新事，若是则先建议用户交接、到新会话再做；同一件事的继续不提，用户拒绝过就不再提。档位提醒也建议在任务交界询问，不打断进行中的排查；用户同意后按 `aiw handoff --template` 写交接文件，再运行 `aiw handoff <文件>`。低于门槛时不提示并删除档位标记；拿不到锁、读不到 usage 或异常时静默跳过。以 `<cross-session-message` 开头（忽略开头空白）的跨会话消息不触发派单判定，也不注入 `[派单]` 或 `[缓冲区]`，上下文提醒仍正常检查。
+`AIW_HANDOFF_AT` 默认 `200000`，设 `0` 关闭提醒；门槛或步长为负数、非法值时也不提示。`AIW_HANDOFF_STEP` 默认 `100000`。达到阈值后按 `ctx // step` 分桶，同一会话只在 bucket 比上次提醒更大时发档位提醒，万位四舍五入显示；未触发档位提醒时仍发简短条件提示。每次最多注入一行 `[上下文]`，不超过 120 字符；档位提醒合并条件提示的意思，由主会话判断本条是否是与当前工作无关的新事，若是则在任务交界先建议用户用 `aiw handoff` 交接、到新会话再做，不打断进行中的排查；同一件事继续即可，交给 Claude Code 自动压缩，不提示用户操作；用户拒绝过就不再提。用户同意交接后按 `aiw handoff --template` 写交接文件，再运行 `aiw handoff <文件>`。低于门槛时不提示并删除档位标记；拿不到锁、读不到 usage 或异常时静默跳过。以 `<cross-session-message` 开头（忽略开头空白）的跨会话消息不触发派单判定，也不注入 `[派单]` 或 `[缓冲区]`，上下文提醒仍正常检查。
 
 ```bash
 aiw handoff --template
@@ -66,7 +66,7 @@ aiw handoff <交接文件> [--workdir DIR] [--dry-run]
 
 Orca CLI 按 `AIW_ORCA_BIN`、PATH 中的 `orca`、`/Applications/Orca.app/Contents/Resources/bin/orca` 顺序寻找。命令通过 `orca terminal create` 在指定工作目录打开终端、聚焦并运行 Claude，首条提示要求读交接文件、核对现状、按下一步继续；成功后旧会话可以关掉。找不到 Orca、返回非零或等待超过 20 秒时，打印失败原因及可复制的 `cd ... && claude ...` 命令，仍返回 0。
 
-推荐的兜底是在 `~/.claude/settings.json` 顶层设 `"autoCompactWindow": 600000`，或设置环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=600000`，会话到约 60 万 token 时由 Claude Code 自动压缩。这是 [Claude Code 官方设置](https://code.claude.com/docs/en/model-config#context-window-and-auto-compaction)，与交接提醒独立。
+安装脚本默认在 `~/.claude/settings.json` 顶层没有 `autoCompactWindow`、且环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 未设置时写入 `"autoCompactWindow": 400000`；已有值不改，`AIW_NO_AUTOCOMPACT=1` 可跳过，`--minimal` 不改此文件。也可自行设置环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000`，会话到约 40 万 token 时由 Claude Code 自动压缩。这是 [Claude Code 官方设置](https://code.claude.com/docs/en/model-config#set-the-auto-compact-window)，与交接提醒独立；同一件事继续即可，全交给 Claude Code 自动压缩。Claude Code 默认还有闲置压缩：会话闲置且上下文超过约 20 万 token 时自动压缩，阈值由 `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` 控制（默认 `200000`），可用 `idleCompaction` 设置关闭，能避免大上下文缓存过期后整段重写，见[官方环境变量文档](https://code.claude.com/docs/en/env-vars)。
 
 ## 改进缓冲区
 

@@ -31,6 +31,7 @@ panel 默认名单去掉主会话自身后过滤不可用座位，stderr 列原�
 
 - `~/.claude/CLAUDE.md`：添加公开规则引入行；个人规则存在时，紧接着引入。保留其他文字。
 - `~/.claude/settings.json`：添加或刷新 `UserPromptSubmit` 派单钩子。保留其他设置和钩子。
+- 两种钩子模式都在顶层没有 `autoCompactWindow`、且环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 未设置时，写入 `"autoCompactWindow": 400000`，作为约 40 万 token 的自动压缩兜底。已有值不改，设 `AIW_NO_AUTOCOMPACT=1` 可跳过。
 - `~/.local/bin/aiw`：创建或替换指向本仓库的软链，**不备份**。
 - `~/.zshrc`：不改。`~/.local/bin` 不在 PATH 时只打印提示。
 - 若存在 `~/.codex` 或 PATH 中有 `codex`：更新 `~/.codex/AGENTS.md` 的 aiw 标记块，以及 `~/.codex/hooks.json` 的钩子。保留块外文字。设 `AIW_NO_CODEX=1` 可跳过。
@@ -147,6 +148,8 @@ aiw 帮 Claude Code 或 Codex 主会话把活分给不同模型：改代码用 w
 ```
 
 脚本删除 aiw 的规则引入、派单钩子、AGENTS 标记块及旧版安装器添加的 PATH 设置，仅删除指向本仓库的软链。改动前备份为 `.bak-*`；JSON 不合法时退出且不改任何文件，可重复运行。仓库和 `state/`、`~/.config/aiw/`、agent-use / agent-use-adapters 及插件钩子均保留；如装过 aiw 插件，请在 Claude Code 里停用。
+
+卸载保留 `~/.claude/settings.json` 中的 `autoCompactWindow`；不再需要自动压缩兜底时可自行删除。
 
 也可手动撤销以下改动，保留其他设置：
 

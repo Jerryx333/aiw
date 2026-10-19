@@ -586,6 +586,7 @@ def install_claude_hook_mode():
             "UserPromptSubmit": [{"matcher": "*", "hooks": [other]}, {"hooks": [other]}],
             "PreToolUse": [{"matcher": "Bash", "hooks": [other]}]}}
         data = json.loads(json.dumps(expected))
+        expected["autoCompactWindow"] = 400000
         data["hooks"]["UserPromptSubmit"][0]["hooks"].extend([route, route])
         data["hooks"]["UserPromptSubmit"].insert(1, {"hooks": [route]})
         original = json.dumps(data, ensure_ascii=False).encode()
@@ -628,7 +629,7 @@ def install_claude_hook_mode():
               and (home / ".codex/AGENTS.md").read_bytes() == codex_agents, "模式切换影响 Codex")
         settings.write_text(json.dumps({"hooks": {"UserPromptSubmit": [{"hooks": [route]}]}}))
         run("--claude-hook=plugin", shell=True)
-        check(json.loads(settings.read_text()) == {"hooks": {}}, "空组或空事件键未删除")
+        check(json.loads(settings.read_text()) == {"hooks": {}, "autoCompactWindow": 400000}, "空组或空事件键未删除")
         for raw in (b'{ "model": "opus" }\n', b'{broken'):
             settings.write_bytes(raw)
             for args in (("--claude-hook=invalid",), ("--unknown",), ("--claude-hook", "plugin"),
@@ -642,7 +643,63 @@ def install_claude_hook_mode():
                 check(before_files == after_files, "非法参数修改了文件")
         settings.unlink()
         run("--claude-hook=plugin")
-        check(not settings.exists(), "plugin 不应新建 settings.json")
+        check(json.loads(settings.read_text()) == {"autoCompactWindow": 400000}, "plugin 未新建自动压缩兜底")
+
+
+def install_autocompact():
+    with tempfile.TemporaryDirectory() as td:
+        home, env = fake_home(Path(td))
+        repo = home / '.claude/aiw'
+        settings = home / '.claude/settings.json'
+        env.pop('AIW_NO_AUTOCOMPACT', None)
+        env.pop('CLAUDE_CODE_AUTO_COMPACT_WINDOW', None)
+        for mode in ('settings', 'plugin'):
+            # Use a real installation for both modes, then the same Python block
+            # with a different stamp so a duplicate backup cannot hide in the same second.
+            original = b'{ "model": "opus" }\n'
+            settings.write_bytes(original)
+            result = sh(['bash', str(repo / 'install.sh'), '--claude-hook=' + mode], env=env)
+            check(result.returncode == 0, result.stdout + result.stderr)
+            check(json.loads(settings.read_text())['autoCompactWindow'] == 400000, mode)
+            check('自动压缩兜底：写入' in result.stdout, result.stdout)
+            backups = list(settings.parent.glob('settings.json.bak-*'))
+            check(backups and any(p.read_bytes() == original for p in backups), 'missing original backup')
+            before = settings.read_bytes()
+            result = install_phase(repo, 3, [settings, 'repeat-' + mode, mode], env)
+            check(result.returncode == 0 and '已有 autoCompactWindow 值，保留' in result.stdout,
+                  result.stdout + result.stderr)
+            check(settings.read_bytes() == before
+                  and set(settings.parent.glob('settings.json.bak-*')) == set(backups),
+                  '重复安装改动文件或产生新备份')
+
+            for value in (123, None, False, 0, '', [], {}):
+                settings.write_text(json.dumps({'autoCompactWindow': value}))
+                result = install_phase(repo, 3, [settings, 'existing', mode], env)
+                check(result.returncode == 0 and '已有 autoCompactWindow 值，保留' in result.stdout,
+                      result.stdout + result.stderr)
+                check(json.loads(settings.read_text())['autoCompactWindow'] == value,
+                      f'{mode}: existing value changed: {value!r}')
+
+            for overrides in ({'AIW_NO_AUTOCOMPACT': '1'},
+                              {'CLAUDE_CODE_AUTO_COMPACT_WINDOW': '500000'},
+                              {'CLAUDE_CODE_AUTO_COMPACT_WINDOW': ''}):
+                settings.write_bytes(original)
+                backups = set(settings.parent.glob('settings.json.bak-*'))
+                result = install_phase(repo, 3, [settings, 'skip', mode], dict(env, **overrides))
+                check(result.returncode == 0 and '自动压缩兜底：跳过' in result.stdout,
+                      result.stdout + result.stderr)
+                check('autoCompactWindow' not in json.loads(settings.read_text()), str(overrides))
+                if mode == 'plugin':
+                    check(settings.read_bytes() == original
+                          and set(settings.parent.glob('settings.json.bak-*')) == backups,
+                          '跳过时 plugin 改动文件或产生备份')
+                    settings.unlink()
+                    result = install_phase(repo, 3, [settings, 'skip-absent', mode], dict(env, **overrides))
+                    check(result.returncode == 0 and not settings.exists(), '跳过时 plugin 创建了文件')
+
+        settings.unlink(missing_ok=True)
+        result = sh(['bash', str(repo / 'install.sh'), '--minimal'], env=env)
+        check(result.returncode == 0 and not settings.exists(), result.stdout + result.stderr)
 
 
 
@@ -1167,6 +1224,7 @@ CASES = {case.__name__: case for case in (
     install_existing,
     install_personal_rules,
     install_claude_hook_mode,
+    install_autocompact,
     install_preflight,
     doctor_fingerprint,
     doctor_readonly,
@@ -1286,7 +1344,8 @@ def uninstall_roundtrip():
         result = sh(command, env=env)
         check(result.returncode == 0, result.stdout + result.stderr)
         check(md.read_bytes() == b'user rules\r\n\n', repr(md.read_bytes()))
-        check(json.loads(settings.read_text()) == original, settings.read_text())
+        check(json.loads(settings.read_text()) == dict(original, autoCompactWindow=400000), settings.read_text())
+        check('autoCompactWindow' in result.stdout and '可自行删除' in result.stdout, result.stdout)
         check(json.loads((home / '.codex/hooks.json').read_text()) == {}, 'empty hooks remain')
         for directory in ('.codex', '.pi/agent', '.omp/agent'):
             text = (home / directory / 'AGENTS.md').read_text()

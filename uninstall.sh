@@ -169,4 +169,5 @@ if not entry.is_symlink() and entry.resolve() == repo:
 if not claude_had_hook:
     print('· 如装过 aiw 插件，请在 Claude Code 里停用')
 print('· 保留本地配置 ~/.config/aiw/、agent-use / agent-use-adapters、仓库和 state/。')
+print('· 保留 ~/.claude/settings.json 的 autoCompactWindow；不再需要自动压缩兜底时可自行删除。')
 PYEOF

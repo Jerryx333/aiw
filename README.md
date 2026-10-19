@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/b36de332-0783-4ff2-861c-26210eacbd93
 
 | Main session | Changes |
 | --- | --- |
-| Claude Code | One import line in `~/.claude/CLAUDE.md`, one hint hook in `settings.json` |
+| Claude Code | One import line in `~/.claude/CLAUDE.md`, one hint hook in `settings.json`, automatic compaction fallback at 400,000 tokens (existing settings preserved) |
 | Codex | A rules block in `~/.codex/AGENTS.md`, one hint hook in `hooks.json` |
 | pi / omp | A rules block in `~/.pi/agent/AGENTS.md` / `~/.omp/agent/AGENTS.md`, no hook |
 

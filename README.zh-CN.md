@@ -24,7 +24,7 @@ https://github.com/user-attachments/assets/6cdf7ba6-5d0a-4783-9633-83842a1dc385
 
 | 主会话 | 改动 |
 | --- | --- |
-| Claude Code | `~/.claude/CLAUDE.md` 加一行引用，`settings.json` 加一个提示钩子 |
+| Claude Code | `~/.claude/CLAUDE.md` 加一行引用，`settings.json` 加一个提示钩子，自动压缩兜底 40 万（已有设置不改） |
 | Codex | `~/.codex/AGENTS.md` 加一段规则，`hooks.json` 加一个提示钩子 |
 | pi / omp | `~/.pi/agent/AGENTS.md` / `~/.omp/agent/AGENTS.md` 加一段规则，不加钩子 |
 

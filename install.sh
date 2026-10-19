@@ -7,7 +7,7 @@
 #   --with-agent-use：同时安装 / 更新公开核心、现成适配器并注册 provider（座位需自行在本地配置添加）。
 # 做六件事：
 #   1. ~/.claude/CLAUDE.md 引入 @~/.claude/aiw/CLAUDE.md（已有内容保留）
-#   2. ~/.claude/settings.json 加 UserPromptSubmit 派单钩子（其它设置保留）
+#   2. ~/.claude/settings.json 加 UserPromptSubmit 派单钩子和 40 万 token 自动压缩兜底（已有设置保留）
 #   3. ~/.local/bin/aiw 软链到本仓库；~/.local/bin 不在 PATH 时只提示，不改 shell 配置
 #   4. 本机有 Codex（~/.codex 或 codex 命令）时：~/.codex/AGENTS.md 写入/刷新标记块，~/.codex/hooks.json 加派单钩子
 #      pi / omp：目录或命令存在时写 ~/.pi/agent/AGENTS.md、~/.omp/agent/AGENTS.md，不装钩子
@@ -149,9 +149,9 @@ else:
     print(f"✓ {md} 已引入规则")
 PYEOF
 
-# 2. settings.json 钩子（用 python 合并 JSON，不覆盖其它设置）
+# 2. settings.json 钩子和自动压缩兜底（用 python 合并 JSON，不覆盖已有设置）
 "$PY" - "${CLAUDE_DIR}/settings.json" "$STAMP" "$CLAUDE_HOOK" <<'PYEOF'
-import json, shutil, sys
+import json, os, shutil, sys
 from pathlib import Path
 def atomic_write(p, text):
     tmp = p.with_name(p.name + ".tmp-aiw")
@@ -166,6 +166,18 @@ if p.exists():
         data = json.loads(raw) if raw.strip() else {}
     except json.JSONDecodeError as e:
         sys.exit(f"✗ {p} 不是合法 JSON（{e}），没有改动。修好后重跑。")
+before = json.dumps(data, ensure_ascii=False, sort_keys=True)
+compact_changed = False
+if os.environ.get("AIW_NO_AUTOCOMPACT") == "1":
+    compact_result = "· 自动压缩兜底：跳过（AIW_NO_AUTOCOMPACT=1）"
+elif "CLAUDE_CODE_AUTO_COMPACT_WINDOW" in os.environ:
+    compact_result = "· 自动压缩兜底：跳过（已设置 CLAUDE_CODE_AUTO_COMPACT_WINDOW）"
+elif "autoCompactWindow" in data:
+    compact_result = "✓ 自动压缩兜底：已有 autoCompactWindow 值，保留"
+else:
+    data["autoCompactWindow"] = 400000
+    compact_changed = True
+    compact_result = "✓ 自动压缩兜底：写入 autoCompactWindow = 400000"
 if sys.argv[3] == "plugin":
     hooks = data.get("hooks", {})
     groups = hooks.get("UserPromptSubmit", [])
@@ -187,15 +199,19 @@ if sys.argv[3] == "plugin":
             hooks["UserPromptSubmit"] = kept_groups
         else:
             hooks.pop("UserPromptSubmit", None)
-        shutil.copy2(p, p.with_name(p.name + ".bak-" + stamp))
+    if changed or compact_changed:
+        if p.exists():
+            shutil.copy2(p, p.with_name(p.name + ".bak-" + stamp))
         atomic_write(p, json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    if changed:
         print(f"✓ 派单钩子由插件管理，已删除 {p} 中的派单钩子（备份 {p.name}.bak-{stamp}）")
     else:
-        print("✓ 派单钩子由插件管理，settings.json 无需改动")
+        print("✓ 派单钩子由插件管理，settings.json 无需改动" if not compact_changed
+              else "✓ 派单钩子由插件管理，settings.json 无派单钩子")
+    print(compact_result)
     sys.exit(0)
 hooks = data.setdefault("hooks", {})
 groups = hooks.setdefault("UserPromptSubmit", [])
-before = json.dumps(data, ensure_ascii=False, sort_keys=True)
 installed = False
 for group in groups:
     kept = []
@@ -218,6 +234,7 @@ if json.dumps(data, ensure_ascii=False, sort_keys=True) != before:
     print(f"✓ {p} 合并派单钩子")
 else:
     print(f"✓ {p} 已有派单钩子")
+print(compact_result)
 PYEOF
 fi
 

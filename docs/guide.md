@@ -34,6 +34,7 @@ The installer makes these changes:
 
 - `~/.claude/CLAUDE.md`: adds the aiw import, then existing personal rules; keeps other text.
 - `~/.claude/settings.json`: adds/refreshes the `UserPromptSubmit` hook; keeps other settings/hooks.
+- Adds top-level `"autoCompactWindow": 400000` as an automatic compaction fallback in either hook mode, only when the key and `CLAUDE_CODE_AUTO_COMPACT_WINDOW` environment variable are absent. Existing values are preserved. Set `AIW_NO_AUTOCOMPACT=1` to skip this.
 - `~/.local/bin/aiw`: creates or replaces a symlink to this checkout, **without a backup**.
 - `~/.zshrc`: not touched. If `~/.local/bin` is not on PATH, it only prints a hint.
 - If `~/.codex` exists or `codex` is on PATH: updates the aiw block in `~/.codex/AGENTS.md` and the hook in `~/.codex/hooks.json`. Keeps text outside the block. Set `AIW_NO_CODEX=1` to skip this.
@@ -152,6 +153,8 @@ Run the uninstall script (add `--dry-run` to preview):
 ```
 
 It removes aiw imports, assignment hooks, AGENTS blocks and the PATH entry an older installer may have added, and deletes only symlinks pointing to this checkout. Changes get `.bak-*` backups; invalid JSON stops all changes. It is safe to run again. The checkout, `state/`, `~/.config/aiw/`, agent-use / agent-use-adapters and plugin hooks are preserved. If you installed the aiw plugin, disable it in Claude Code.
+
+The uninstaller preserves `autoCompactWindow` in `~/.claude/settings.json`; you can delete it yourself if you no longer need the automatic compaction fallback.
 
 You can also undo these changes manually; keep unrelated settings:
 

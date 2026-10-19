@@ -159,15 +159,15 @@ def context_hint(payload: dict) -> tuple[int | None, str]:
             except FileNotFoundError:
                 pass
             if bucket <= previous:
-                return ctx, (f"[上下文] 约 {(ctx + 5000) // 10000} 万 token。若本条是无关新事，先建议 aiw handoff 交接到新会话再做；"
-                             "同一件事继续不提，用户拒绝过不再提。")
+                return ctx, (f"[上下文] 约 {(ctx + 5000) // 10000} 万 token。无关新事先建议 aiw handoff 交接到新会话；"
+                             "同一件事继续即可；用户拒绝过不再提。")
             with tempfile.NamedTemporaryFile(mode="w", dir=directory, delete=False) as out:
                 temporary = Path(out.name)
                 out.write(str(bucket))
             temporary.replace(marker)
             temporary = None
-            return ctx, (f"[上下文] 约 {(ctx + 5000) // 10000} 万 token。新档位：任务交界可问交接；无关新事先建议交接到新会话再做；"
-                         "同一事继续或已拒绝不提。同意后 aiw handoff --template 写文件，再 aiw handoff <文件>。")
+            return ctx, (f"[上下文] 约 {(ctx + 5000) // 10000} 万 token。新档位：同一件事继续，自动压缩兜底；"
+                         "无关新事在任务交界建议交接，不打断排查；已拒绝不提。同意后 aiw handoff --template 写文件，aiw handoff <文件>。")
     except Exception:
         return ctx, ""
     finally:
