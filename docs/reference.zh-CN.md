@@ -146,7 +146,7 @@ aiw enable your-provider:your-model # 仅用户确认仍免费后恢复该模型
 aiw enable local-text            # 仅恢复旧座位条目
 ```
 
-freecheck 跳过旧座位条目及已停用候选，对每个唯一 provider:model 只探测一次，固定模型并按适配器能力禁用轮换，用相同 agent-use 路径发送 `Reply with exactly: FREECHECK_OK`，只读、不顶替、每模型超时 120 秒。非收费失败仅记录。通过本地配置接入 opencode provider 时，另读取 `$AGENT_USE_HOME/config/dispatcher.json` 的 `default_model`、`models`、`options.fallback_models` 中的 `-free` 模型，与 Zen `/zen/v1/models` 比较：以 `User-Agent: aiw-freecheck/1` 拉取，只有格式合法且至少 10 项才判定：全部下架停用，部分下架仅提醒（同组只一次），拉取失败或目录少于 10 项只记日志，不判定、不提醒；`AIW_ZEN_MODELS_URL` 可覆盖并支持 `file://` 离线测试。
+freecheck 跳过旧座位条目及已停用候选，对每个唯一 provider:model 只探测一次，固定模型并按适配器能力禁用轮换，用相同 agent-use 路径发送 `Reply with exactly: FREECHECK_OK`，只读、不顶替、每模型超时 120 秒。非收费失败在 STATE/freecheck-failures.json 中按 provider:model（无模型时用 provider）记录连续次数及最近 kind/reason，达到两次入队通知，同一段连续失败只提醒一次，成功后清零；免费时段外、活动到期和已停用分支不计数，记录文件缺失或损坏按空处理。通过本地配置接入 opencode provider 时，另读取 `$AGENT_USE_HOME/config/dispatcher.json` 的 `default_model`、`models`、`options.fallback_models` 中的 `-free` 模型，与 Zen `/zen/v1/models` 比较：以 `User-Agent: aiw-freecheck/1` 拉取，只有格式合法且至少 10 项才判定：全部下架停用，部分下架仅提醒（同组只一次），拉取失败或目录少于 10 项只记日志，不判定、不提醒；`AIW_ZEN_MODELS_URL` 可覆盖并支持 `file://` 离线测试。
 
 **本地适配器限制**：opencode provider 的座位 model 为空时，仍使用 dispatcher 的默认及备选；收费按实际模型记录，doctor 展示，但当前派单暂不过滤这些已停用模型。无显式模型的 freecheck 同样沿用 dispatcher。
 
@@ -517,6 +517,8 @@ CLI 座位可选 `adapter`：缺省或 `null` 为普通 CLI；目前字符串仅
 `--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 同用返回 64。
 
 agent-use 的 `status.json` 必须声明整数 `protocol_version: 1`。缺失或不兼容时记为 `incompatible`，按 `not_installed` 时长熔断并沿顶替链换下一家。外层超时仍保留超时兜底。失败结果的未知 reason（非 rc=124）会在 stderr 提醒更新 `AGENT_USE_REASON`，分类保持 `other`。
+
+私有适配器 reason：`native_cli_incompatible` 映射为 `not_installed`（App 升级后内置 CLI 结构变化，需更新适配器）；`account_restricted` 映射为 `unavailable`（厂商账号受限）。
 
 本地座位可选布尔字段 `expects_credits`（默认 false）：`kind=agent_use` 的座位启用后，成功但最后一个 attempt 未报告数值型 `credits` 时提示免费保护无法核对收费，成功判定不变。未知 reason 和缺少 credits 的提醒会在 findings 收集开启时写入 `source=worker` 的 observation；关闭收集或写入失败不影响派单。
 

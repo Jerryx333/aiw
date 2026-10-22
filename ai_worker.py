@@ -1125,6 +1125,8 @@ AGENT_USE_REASON = {
     "free_status_unknown": "unavailable", "not_free": "paid",
     "payment_required": "paid", "credits_exhausted": "paid",
     # agent-use 适配器词表
+    # App 升级后内置 CLI 结构变化需更新适配器；厂商账号受限按暂不可用处理。
+    "native_cli_incompatible": "not_installed", "account_restricted": "unavailable",
     "tool_call_output": "transient",
     "qoder_contract_invalid": "transient",
     "qoder_exit_nonzero": "transient",

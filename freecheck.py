@@ -7,6 +7,7 @@ import json
 import os
 from env_compat import getenv
 import plistlib
+import socket
 import subprocess
 import sys
 import urllib.request
@@ -90,6 +91,47 @@ def zen_check():
     return 'Zen 免费模型仍在列表'
 
 
+def record_probe(seat, cfg, model, result):
+    """连续失败只入队一次；通知发送在状态锁外进行。"""
+    count = 0
+    queued = False
+    try:
+        with w.state_lock():
+            path = w.STATE / 'freecheck-failures.json'
+            failures = w.load_json(path, {}, strict=False)
+            if not isinstance(failures, dict):
+                failures = {}
+            provider = cfg.get('provider') or seat
+            key = f'{provider}:{model}' if model else provider
+            if result['kind'] == 'ok':
+                failures.pop(key, None)
+            else:
+                previous = failures.get(key, {})
+                if (not isinstance(previous, dict)
+                        or type(previous.get('count')) is not int
+                        or previous['count'] < 0
+                        or type(previous.get('notified')) is not bool):
+                    previous = {}
+                count = previous.get('count', 0) + 1
+                entry = {'count': count, 'kind': result['kind'],
+                         'reason': result.get('reason') or '',
+                         'notified': previous.get('notified', False)}
+                if count >= 2 and not entry['notified']:
+                    w.queue_notification(
+                        f"[aiw] 座位 {seat}（{model or ''}）连续 {count} 次自检失败："
+                        f"{entry['kind']}/{entry['reason']}。主机 {socket.gethostname()}，"
+                        f"{w.now()}。修好前派单会被顶替。")
+                    entry['notified'] = True
+                    queued = True
+                failures[key] = entry
+            w.save_json(path, failures)
+    except (OSError, w.StateError) as exc:
+        print(f'[freecheck] 连续失败状态更新失败（{type(exc).__name__}）', file=sys.stderr)
+    if queued:
+        w.retry_notifications()
+    return count
+
+
 def check():
     errands = w.errand_names()
     w.retry_notifications()
@@ -143,9 +185,12 @@ def check():
             if result.get('disabled_key'):
                 newly_disabled |= result.get('newly_disabled', False)
                 outcome = '收费信号，已停用 ' + result['disabled_key']
+                suffix = ''
             else:
+                count = record_probe(seat, cfg, model, result)
                 outcome = '探测成功' if result['kind'] == 'ok' else f"探测失败（{result['kind']}），未停用"
-            results.append((seat, detail + outcome + (f'（{model}）' if model else '')))
+                suffix = f'，连续 {count} 次' if result['kind'] != 'ok' else ''
+            results.append((seat, detail + outcome + (f'（{model}）' if model else '') + suffix))
     for seat, detail in results:
         print(f'{seat}: {detail}')
     return 2 if newly_disabled else 0

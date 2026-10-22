@@ -481,6 +481,94 @@ def freecheck():
 
 
 
+def freecheck_failure_streak():
+    with tempfile.TemporaryDirectory() as td:
+        env = free_guard_fixture(Path(td))
+        script = """import contextlib, io, json
+from unittest.mock import patch
+import freecheck as f
+w = f.w
+cfg = {'provider': 'test-provider', 'free_guard': True}
+w.SEATS = {'seats': {'test-seat': cfg, 'alias': cfg}}
+result = {'kind': 'transient', 'reason': 'test_failure', 'rc': 1, 'secs': 0}
+path = w.STATE / 'freecheck-failures.json'
+pending = w.STATE / 'notify-pending.jsonl'
+locked = False
+real_lock = w.state_lock
+real_queue = w.queue_notification
+real_load = w.load_json
+real_save = w.save_json
+@contextlib.contextmanager
+def lock():
+    global locked
+    with real_lock():
+        locked = True
+        try:
+            yield
+        finally:
+            locked = False
+def queue(message):
+    assert locked
+    real_queue(message)
+def load(p, *args, **kwargs):
+    if p == path:
+        assert locked
+    return real_load(p, *args, **kwargs)
+def save(p, *args, **kwargs):
+    if p == path:
+        assert locked
+    return real_save(p, *args, **kwargs)
+def rows():
+    return [json.loads(line) for line in pending.read_text().splitlines()] if pending.exists() else []
+def probe(**changes):
+    result.clear()
+    result.update(kind='transient', reason='test_failure', rc=1, secs=0)
+    result.update(changes)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert f.check() == 0
+    return out.getvalue()
+with patch.object(w, 'state_lock', lock), patch.object(w, 'queue_notification', queue), \\
+     patch.object(w, 'load_json', load), patch.object(w, 'save_json', save), \\
+     patch.object(w, 'retry_notifications'), patch.object(w, 'errand_names', return_value=[]), \\
+     patch.object(w, 'disabled_seat', return_value=False), patch.object(w, 'ledger'), \\
+     patch.object(w, 'available_models', return_value=['test-model']), \\
+     patch.object(w, 'run_seat', side_effect=lambda *a, **kw: result), \\
+     patch.object(f.socket, 'gethostname', return_value='test-host'), \\
+     patch.object(w, 'now', return_value='test-time'):
+    assert probe().strip() == 'test-seat: 探测失败（transient），未停用（test-model），连续 1 次'
+    assert not rows()
+    probe(reason='latest_failure')
+    assert len(rows()) == 1
+    assert rows()[0]['message'] == ('[aiw] 座位 test-seat（test-model）连续 2 次自检失败：'
+        'transient/latest_failure。主机 test-host，test-time。修好前派单会被顶替。')
+    assert probe().strip().endswith('连续 3 次') and len(rows()) == 1
+    entry = json.loads(path.read_text())['test-provider:test-model']
+    assert entry == {'count': 3, 'kind': 'transient', 'reason': 'test_failure', 'notified': True}
+    probe(kind='ok', reason='ok', rc=0)
+    assert json.loads(path.read_text()) == {}
+    probe()
+    before = path.read_bytes()
+    for skipped in ({'reason': 'outside_free_window'}, {'reason': 'promotion_expired'},
+                    {'disabled_key': 'test-provider:test-model'}):
+        probe(**skipped)
+        assert path.read_bytes() == before and len(rows()) == 1
+    probe()
+    assert len(rows()) == 2
+    # Invalid JSON, invalid top-level shape and malformed entries all recover.
+    for broken in ('{', '[]', '{"test-provider:test-model": {"count": "bad"}}',
+                   '{"test-provider:test-model": null}'):
+        path.write_text(broken)
+        assert probe().strip().endswith('连续 1 次') and len(rows()) == 2
+    # No model: key is the provider, with no trailing colon.
+    with patch.object(w, 'available_models', return_value=[None]):
+        probe()
+    assert json.loads(path.read_text())['test-provider']['count'] == 1
+"""
+        r = sh([sys.executable, '-c', script], cwd=REPO, env=env)
+        check(r.returncode == 0, r.stdout + r.stderr)
+
+
 def freecheck_install():
     import plistlib
     with tempfile.TemporaryDirectory() as td:
@@ -731,6 +819,7 @@ CASES = {case.__name__: case for case in (
     free_guard,
     agent_use_registry,
     freecheck,
+    freecheck_failure_streak,
     freecheck_install,
     free_guard_model_attempts,
     free_guard_outer_timeout,

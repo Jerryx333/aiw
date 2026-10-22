@@ -535,12 +535,14 @@ def adapter_reason_vocabulary():
             "cli_authentication_failed",
         ),
         "unavailable": (
+            "account_restricted",
             "external_agy_session_active",
             "connection_or_timeout",
             "switch_verification_failed",
             "response_limit",
         ),
         "not_installed": (
+            "native_cli_incompatible",
             "activation_failed",
             "insecure_socket",
             "invalid_loopback_url",
