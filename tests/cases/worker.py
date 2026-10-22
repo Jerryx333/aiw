@@ -559,6 +559,7 @@ def adapter_reason_vocabulary():
             "existing_run_mismatch",
             "invalid_effort",
             "invalid_max_switches",
+            "account_switching_disabled",
             "invalid_model",
             "invalid_parameters",
             "invalid_request",

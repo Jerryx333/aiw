@@ -1117,6 +1117,8 @@ AGENT_USE_REASON = {
     "free_window_invalid": "unavailable",
     # 模型白名单拒绝属于请求配置错误：不熔断、不自动改派，沿用 format 的 rc=2。
     "model_not_allowed": "format",
+    # 用户禁止 antigravity 切号时，正数 max_switches 被拒属于请求配置错误。
+    "account_switching_disabled": "format",
     "timeout": "timeout",
     "validation_failed": "format",
     # Zen 免费档拒绝按暂不可用短熔断并顶替；内部模型轮换后仍无答复按已有 empty 处理
