@@ -25,7 +25,7 @@ from pathlib import Path
 from harness_ids import format_panel_id
 
 from ai_worker import AttachError, SEATS, build_attachments, dispatch, resolve_role, RoleError
-from seats_config import ROLE_NAMES
+from seats_config import ROLE_NAMES, ConfigError, forward_command
 
 HERE = Path(__file__).resolve().parent
 STATE = Path(getenv("AIW_STATE", HERE / "state"))
@@ -136,7 +136,8 @@ def main() -> int:
         if not jobs.isascii() or not jobs.isdigit() or not 1 <= int(jobs) <= 6:
             raise ValueError("--jobs 必须为 1–6 的整数")
         jobs = int(jobs)
-        if seat in ROLE_NAMES:
+        forwarding_role = bool(forward_command(SEATS)) and seat in ROLE_NAMES
+        if seat in ROLE_NAMES and not forwarding_role:
             role = seat
             try:
                 seat = resolve_role(role)
@@ -144,13 +145,13 @@ def main() -> int:
                 print(exc, file=sys.stderr)
                 return 2
             print(f"[ai-worker] 角色 {role} → 座位 {seat}", file=sys.stderr)
-        cfg = SEATS["seats"].get(seat)
+        cfg = {} if forwarding_role else SEATS["seats"].get(seat)
         if cfg is None:
             raise ValueError(f"未知座位：{seat}")
         limit = cfg.get("max_concurrency")
         if limit is not None and (type(limit) is not int or limit < 1):
             raise ValueError("max_concurrency 必须为正整数")
-        if cfg.get("kind") != "agent_use" and not cfg.get("argv_ro"):
+        if not forwarding_role and cfg.get("kind") != "agent_use" and not cfg.get("argv_ro"):
             raise ValueError(f"座位 {seat} 不支持只读任务")
         if not timeout.isascii() or not timeout.isdigit() or int(timeout) <= 0:
             raise ValueError("超时应为正整数秒")
@@ -163,7 +164,7 @@ def main() -> int:
         grace = float(os.environ.get("AIW_MAP_GRACE", "90"))
         if not math.isfinite(grace) or grace < 0:
             raise ValueError("AIW_MAP_GRACE 必须是非负有限秒数")
-    except (ValueError, OSError, AttachError) as e:
+    except (ValueError, OSError, AttachError, ConfigError) as e:
         print(e, file=sys.stderr)
         return 64
     if limit is not None and jobs > limit:

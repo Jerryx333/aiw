@@ -44,7 +44,10 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | started | 字符串，带时区的 ISO 8601 本次尝试开始时间，顶替时重置 |
 | panel | 字符串或 null，`AIW_PANEL_DIR`，用于会诊分组；panel.py 为子进程设置 |
 | nested | 布尔值，启动 worker 时 `AIW_NESTED` 是否等于 `1` |
-| effort | 字符串，可选；codex / codex-sol 本次实际推理档位（low/medium/high），其他座位不出现 |
+| effort | 字符串，可选；本机 codex / codex-sol 本次实际推理档位（low/medium/high），转发时仅显式传参才出现 |
+| run_dir | 字符串，可选；转发时为本机 run 目录的绝对路径 |
+
+转发在启动命令前复用同一 liveness 锁和发布机制，`seat` 与 `actual` 均为请求的角色或座位名（执行期间尚不知道远端实际座位），`model` 为 `default`，`panel` 仍取 `AIW_PANEL_DIR`（map 为 null）。rc=69 或启动失败后，本机尝试覆盖同一 inflight 文件并复用锁；退出时统一清理。
 
 ## tracks/<pid>.json
 

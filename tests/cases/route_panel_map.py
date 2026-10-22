@@ -845,7 +845,59 @@ def handoff_cli():
 
 
 
+def panel_map_forward():
+    from cases.forward import fixture
+    from ai_worker import PANEL_FORMAT
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        local = t / 'local.json'
+        write_legacy_local(local, {'panel_default': ['qoder', 'opencode', 'workbuddy'],
+                                  'seats': {'workbuddy': {'disabled': True}}})
+        env.update(AIW_CONFIG=str(local), AGENT_USE_HOME=str(t / 'missing-install'))
+        state = Path(env['AIW_STATE'])
+        state.mkdir(parents=True, exist_ok=True)
+        (state / 'breaker.json').write_text(json.dumps({
+            'qoder': {'reason': 'auth', 'until': 9999999999},
+            'opencode': {'reason': 'not_installed', 'until': 9999999999}}))
+        r = sh([sys.executable, str(REPO / 'panel.py'), str(wd), '10', cmd[5]], env=env)
+        check(r.returncode == 0 and '跳过不可用座位 workbuddy' in r.stderr, r)
+        out, = (Path(env['AIW_STATE']) / 'panels').iterdir()
+        summary = json.loads((out / 'summary.json').read_text())
+        check(summary['sufficient'] and summary['answered'] == ['qoder', 'opencode'], summary)
+        check((out / 'prompt.md').read_text() == Path(cmd[5]).read_text(), 'panel 原 prompt 改变')
+        for seat in summary['answered']:
+            check((out / (seat + '.provider')).read_text() == 'remote-seat\n', seat)
+            check((out / (seat + '.md')).read_text() == 'forward stdout\n', seat)
+        runs = list((Path(env['AIW_STATE']) / 'runs').glob('*/snapshot.json'))
+        check(len(runs) == 2, runs)
+        for path in runs:
+            snap = json.loads(path.read_text())
+            check('--ro' in snap['argv'] and '--no-findings' in snap['argv'] and
+                  snap['prompt'].count(PANEL_FORMAT) == 1, snap)
+        (wd / 'a.txt').write_text('attachment')
+        r = sh([sys.executable, str(REPO / 'map.py'), str(wd), '10', cmd[5], 'a.txt',
+                '--seat', 'draft', '--jobs', '6'], env=env)
+        check(r.returncode == 0, r)
+        out, = (Path(env['AIW_STATE']) / 'maps').iterdir()
+        summary = json.loads((out / 'summary.json').read_text())
+        check(summary['seat'] == 'draft' and summary['jobs'] == 6 and
+              summary['items'][0]['provider'] == 'remote-seat', summary)
+        data = json.loads((t / 'called').read_text())
+        check(data['argv'][1] == 'draft' and '--ro' in data['argv'] and
+              '--text' in data['argv'] and '--no-findings' in data['argv'], data)
+        check(data['env']['AIW_FORWARD_GROUP'] == str(out.resolve()), data)
+        (state / 'breaker.json').unlink()
+        au = fake_agent_use(t)
+        r = sh([sys.executable, str(REPO / 'map.py'), str(wd), '10', cmd[5], 'a.txt',
+                '--seat', 'draft'], env=dict(env, AGENT_USE_HOME=str(au), FORWARD_RC='69'))
+        check(r.returncode == 0, r)
+        errors = [p.read_text() for p in (state / 'maps').glob('*/01-a.txt.stderr.txt')]
+        check(any('改在本机执行' in error and '角色 draft →' in error for error in errors), errors)
+
+
+
 CASES = {case.__name__: case for case in (
+    panel_map_forward,
     route_textwork,
     route_override,
     map_interrupt,

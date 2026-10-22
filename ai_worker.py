@@ -152,17 +152,27 @@ def role_candidate_reason(role, seat):
     return None
 
 
-def seat_unavailable(seat, *, readonly=True, snapshot=None):
-    """Role/panel preselection; quota/rate limits still use normal dispatch."""
+def seat_policy_unavailable(seat, *, snapshot=None):
+    """只检查座位策略，不依赖本机安装与认证状态。"""
     cfg = SEATS['seats'].get(seat)
     if cfg is None:
         return '座位不存在'
-    disabled, breakers = snapshot if snapshot is not None else selection_snapshot()
+    disabled = snapshot[0] if snapshot is not None else load_json(STATE / "disabled.json", {})
     entry = disabled_seat(seat, disabled=disabled)
     if entry:
         if entry.get('disabled_by_user'):
             return f"已被用户停用：{entry['disabled_by_user']}"
         return '已停用（disabled）'
+    return None
+
+
+def seat_unavailable(seat, *, readonly=True, snapshot=None):
+    snapshot = snapshot if snapshot is not None else selection_snapshot()
+    reason = seat_policy_unavailable(seat, snapshot=snapshot)
+    if reason:
+        return reason
+    cfg = SEATS['seats'][seat]
+    _, breakers = snapshot
     if cfg.get('kind') == 'agent_use':
         script = agent_use_home() / 'scripts' / 'run_agent.py'
         if not script.is_file():
@@ -2279,8 +2289,12 @@ def main() -> int:
     liveness_lock = None
     attempt, rc = {}, 1
     publish = True
+    prepared = False
     def before_execute():
-        nonlocal liveness_lock, publish
+        nonlocal liveness_lock, publish, prepared
+        if prepared:
+            return inflight if publish else None
+        prepared = True
         liveness_lock = acquire_liveness_lock(liveness_path)
         publish = liveness_lock is not None or not liveness_path.exists()
         if not publish:
@@ -2345,7 +2359,8 @@ def record_findings(workdir, seat, actual, via, ro, prompt_id, run_dir, parsed, 
         return False
 
 
-def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt):
+def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
+                     inflight=None, *, before_execute=None):
     role = seat if seat in ('write', 'review', 'draft') else None
     if role is None and main_exclude_reason(seat):
         print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
@@ -2372,20 +2387,57 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     except (AttachError, OSError, UnicodeError) as exc:
         print(f'[ai-worker] {exc}', file=sys.stderr)
         return 64
+    via = call_via()
+    prompt_id = hashlib.sha1((prompt + render_attachments(files)).encode()).hexdigest()[:10]
+    run_dir = new_run_dir(re.sub(r'[^\w.-]', '_', seat))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    if via != 'direct':
+        flags.add('--no-findings')
+    if via == 'panel' and os.environ.get('AIW_PANEL_FORMAT') == '1':
+        prompt += PANEL_FORMAT
+        prompt_file = str(run_dir / 'forward-prompt.md')
+        Path(prompt_file).write_text(prompt, encoding='utf-8')
     argv = command + [seat, workdir, timeout_s, prompt_file]
     argv += [flag for flag in ('--ro', '--text', '--net', '--no-fallback', '--no-findings') if flag in flags]
     if values.get('effort') is not None:
         argv += ['--effort', values['effort']]
     for name, _ in files:
         argv += ['--attach', str(Path(workdir) / name)]
-    run_dir = new_run_dir(re.sub(r'[^\w.-]', '_', seat))
-    run_dir.mkdir(parents=True, exist_ok=True)
     write_run_file(run_dir / 'task.txt', auto_prompt_prefix(dt.datetime.now().astimezone()) + prompt + render_attachments(files))
     env = dict(os.environ, AIW_NO_FORWARD='1', AIW_FORWARD_MODE='text' if text else 'ro' if ro else 'write',
                AIW_FORWARD_RUN_DIR=str(run_dir))
+    if via == 'panel':
+        env['AIW_PANEL_FORMAT'] = '0'  # 转发 prompt 已含格式，执行端不再追加。
+    env.pop('AIW_FORWARD_GROUP', None)
+    if via != 'direct':
+        env['AIW_FORWARD_GROUP'] = str(Path(os.environ['AIW_PANEL_DIR' if via == 'panel' else 'AIW_MAP_DIR']).resolve())
     env.pop('AIW_MAIN', None)
     if main_agent() is not None:
         env['AIW_MAIN'] = main_agent()
+    provider_file = Path(os.environ['AIW_PROVIDER_FILE']) if os.environ.get('AIW_PROVIDER_FILE') else None
+    if provider_file is not None:
+        try:
+            provider_file.unlink(missing_ok=True)
+        except OSError as exc:
+            print(f'[ai-worker] 警告：删除 provider 失败：{exc}', file=sys.stderr)
+    if before_execute is not None:
+        inflight = before_execute()
+    try:
+        write_tui_session(STATE)
+        if inflight is not None:
+            inflight.parent.mkdir(parents=True, exist_ok=True)
+            save_json(inflight, {
+                **({'effort': values['effort']} if values.get('effort') else {}),
+                'pid': os.getpid(), 'host': socket.gethostname(),
+                'session': session_id(), 'claude_pid': os.environ.get('CLAUDE_PID') or None,
+                'seat': seat, 'actual': seat, 'model': 'default',
+                'workdir': workdir, 'prompt': prompt_id, 'ro': ro,
+                'timeout': int(timeout_s), 'started': now(),
+                'panel': os.environ.get('AIW_PANEL_DIR') or None,
+                'nested': os.environ.get('AIW_NESTED') == '1', 'run_dir': str(run_dir),
+            })
+    except OSError as exc:
+        print(f'[ai-worker] 警告：写 inflight 失败：{exc}', file=sys.stderr)
     started = time.monotonic()
     interruption = None
     try:
@@ -2408,6 +2460,11 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     metadata = load_json(run_dir / 'forward.json', {}, strict=False)
     metadata = metadata if isinstance(metadata, dict) else {}
     actual = metadata.get('actual') if isinstance(metadata.get('actual'), str) else seat
+    if rc == 0 and provider_file is not None:
+        try:
+            atomic_write_bytes(provider_file, (actual + '\n').encode('utf-8'))
+        except OSError as exc:
+            print(f'[ai-worker] 警告：写 provider 失败：{exc}', file=sys.stderr)
     host = metadata.get('host') if isinstance(metadata.get('host'), str) else None
     kind = 'ok' if rc == 0 else 'other'
     verify_fields = {}
@@ -2433,7 +2490,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
             'role': role, 'task_class': 'draft' if text else 'review' if ro else 'write',
             **({'text': True} if text else {}), **verify_fields,
             'repo': repo, 'workdir': workdir if repo is None else None, 'via': call_via(),
-            'prompt': hashlib.sha1((prompt + render_attachments(files)).encode()).hexdigest()[:10],
+            'prompt': prompt_id,
             'ro': ro, 'model': 'default', 'run_dir': str(run_dir), 'kind': kind,
             'rc': rc, 'secs': round(time.monotonic() - started, 1), 'substituted': False, 'err_tail': '',
             **({'effort': values['effort']} if values.get('effort') else {})})
@@ -2484,14 +2541,29 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     if "--worktree" in flags and ("--ro" in flags or seat in ("review", "draft")):
         print("[ai-worker] --worktree 只用于写任务", file=sys.stderr)
         return 64
-    if '--worktree' not in flags and call_via() == 'direct':
+    try:
+        errands = errand_names()
+    except StateError as e:
+        print(e, file=sys.stderr)
+        return 64
+    if seat in errands:
+        print(f"[ai-worker] {seat} 是跑腿供应商，请改用 aiw errand", file=sys.stderr)
+        return 64
+    invalid = errands.intersection(SEATS["fallback"]) | {
+        s for chain in SEATS["fallback"].values() for s in chain if s in errands
+    }
+    if invalid:
+        print(f"[ai-worker] 顶替链配置错误：跑腿供应商 {sorted(invalid)} 只能用 aiw errand", file=sys.stderr)
+        return 64
+    if '--worktree' not in flags:
         try:
             command = forward_command(SEATS)
         except ConfigError as exc:
             print(f'[ai-worker] {exc}', file=sys.stderr)
             return 64
         if command:
-            rc = forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt)
+            rc = forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
+                                  inflight, before_execute=before_execute)
             if rc is not None:
                 return rc
     role = None
@@ -2507,6 +2579,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
             flags.add('--ro')
         if role == 'draft':
             flags.add('--text')
+    if seat in errands:
+        print(f"[ai-worker] {seat} 是跑腿供应商，请改用 aiw errand", file=sys.stderr)
+        return 64
     excluded = main_exclude_reason(seat)
     if excluded:
         print(f"[ai-worker] {excluded}", file=sys.stderr)
@@ -2515,20 +2590,6 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     if reason:
         print_disabled(seat, {"disabled_by_user": reason})
         return 1
-    try:
-        errands = errand_names()
-    except StateError as e:
-        print(e, file=sys.stderr)
-        return 64
-    if seat in errands:
-        print(f"[ai-worker] {seat} 是跑腿供应商，请改用 aiw errand", file=sys.stderr)
-        return 64
-    invalid = errands.intersection(SEATS["fallback"]) | {
-        s for chain in SEATS["fallback"].values() for s in chain if s in errands
-    }
-    if invalid:
-        print(f"[ai-worker] 顶替链配置错误：跑腿供应商 {sorted(invalid)} 只能用 aiw errand", file=sys.stderr)
-        return 64
     text = "--text" in flags
     if text:
         flags.add("--ro")

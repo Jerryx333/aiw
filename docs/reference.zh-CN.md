@@ -4,7 +4,7 @@
 
 公开配置为 `"forward": {"command": []}`，空数组表示关闭。在私有 `seats.local.json` 设置 `{"forward": {"command": ["<命令>", "<参数>"]}}`，数组元素必须都是字符串。环境变量 `AIW_FORWARD`（JSON 字符串数组）覆盖配置；`AIW_NO_FORWARD=1` 优先强制关闭。`aiw doctor` 显示关闭、启用及命令第一个元素的 basename、或被 `AIW_NO_FORWARD` 关闭，不显示其余参数。公开仓库只提供通用协议，传输方式与远端路径映射由用户命令负责。
 
-仅四个位置参数的普通 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单转发；`--worktree` 单和 doctor、enable、panel、map、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验通用参数、prompt 和附件，角色名原样交给远端解析；显式座位先检查本机 `main_exclude`，允许远端独有、未列入本机 SEATS 的座位。本机座位能力、角色候选、熔断和顶替配额不参与转发选择。
+四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色名原样交给远端解析；显式座位先检查本机 `main_exclude`，允许远端独有、未列入本机 SEATS 的座位。本机座位能力、角色候选、熔断和顶替配额不参与转发选择。
 
 命令使用 argv 调用，不经过 shell：
 
@@ -15,7 +15,11 @@ command + [原始 role 或 seat, workdir 绝对路径, timeout, prompt 绝对路
 
 透传 `--ro`、`--text`、`--net`、`--no-fallback`、`--no-findings`、`--effort <值>`；review 补 `--ro`，draft 补 `--text`（隐含只读）。附件沿用本机安全校验并转绝对路径。`--verify` 与 `--verify-timeout` 留在本机，不传给命令。stdout/stderr 直接继承，不捕获；SIGINT/SIGTERM 传递给命令。
 
-环境继承当前环境，另设 `AIW_NO_FORWARD=1` 防递归、`AIW_FORWARD_MODE=write|ro|text`（text 优先，其次显式只读、review 或已知只读座位，否则 write）、`AIW_FORWARD_RUN_DIR=<本机新建的 run 目录>`、`AIW_MAIN=<main_agent()>`（无有效身份时不设）。命令自行传输文件与回传产出；aiw 只访问本机文件。
+环境继承当前环境，另设 `AIW_NO_FORWARD=1` 防递归、`AIW_FORWARD_MODE=write|ro|text`（text 优先，其次显式只读、review 或已知只读座位，否则 write）、`AIW_FORWARD_RUN_DIR=<本机新建的 run 目录>`、`AIW_MAIN=<main_agent()>`（无有效身份时不设）。命令自行传输文件与回传产出；aiw 只访问本机文件。panel/map 子单另设 `AIW_FORWARD_GROUP=<AIW_PANEL_DIR 或 AIW_MAP_DIR 的绝对路径>`，供转发命令对同一批子单共享一次工作区同步；direct 单不设此变量（即使父环境带有也会移除）。
+
+panel/map 子单追加 `--no-findings`，远端不收集观察记录。panel 保留 `--ro --no-fallback`，默认在本机 run 目录另写含 `PANEL_FORMAT` 的转发 prompt，原 prompt 快照不变，转发环境设 `AIW_PANEL_FORMAT=0` 避免执行端重复追加；`--full` 不追加格式。map 保留 `--ro --text` 和逐单附件。设置 `AIW_PROVIDER_FILE` 时，转发前删除旧文件，转发成功原子写入实际座位名与换行（取 `forward.json` 的 actual，否则请求名）；stdout/stderr 仍完整交给 panel/map 保存与汇总。
+
+转发开启时，panel 仍校验未知座位、跑腿供应商、main_exclude、默认名单的 self_seats，以及配置/用户停用和收费保护停用；跳过本机入口脚本/bin 安装和 auth/not_installed 熔断检查，由执行端判断。map 的角色名不在本机解析，按默认并发规则处理，不做角色对应座位的能力检查；rc=69 回退后由 worker 在本机解析角色。未开启转发时，选座行为保持原样。转发复用本机 inflight 生命周期，运行中发布请求座位、panel 分组及本机 run_dir，结束后清理。
 
 退出码 **69 必须表示不可达且尚未排队**，aiw 打印「[ai-worker] 转发不可用（rc=69），改在本机执行」，再完整执行原本机流程（含角色解析）。命令不存在、不可执行等启动 OSError 同样说明原因并回退。其他退出码是最终结果，不能用 69 表示已经排队或执行后的失败，以免重复执行。写单返回 0 且带 `--verify` 时，在本机 workdir 用现有验收逻辑执行，验收失败返回 4。
 

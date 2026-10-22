@@ -42,7 +42,7 @@ ADJUDICATION = """## 主会话裁决（逐条填写）
 
 收敛条件：每条关键意见都有裁决；驳回必须给理由；暂缓写明等什么。不以多数票收敛。
 """
-from seats_config import ConfigError, load_seats
+from seats_config import ConfigError, load_seats, forward_command
 try:
     SEATS = load_seats(HERE)
 except ConfigError as error:
@@ -100,6 +100,13 @@ def main() -> int:
     if free and seats:
         print("--free 与显式座位二选一，不能同时使用", file=sys.stderr)
         return 64
+    try:
+        forwarding = bool(forward_command(SEATS))
+    except ConfigError as e:
+        print(e, file=sys.stderr)
+        return 64
+    from ai_worker import seat_policy_unavailable, seat_unavailable
+    unavailable = seat_policy_unavailable if forwarding else seat_unavailable
     explicit = bool(seats)
     try:
         errands = errand_names()
@@ -120,12 +127,11 @@ def main() -> int:
         me = main_agent()
         skip = set(SEATS.get("self_seats", {}).get(me, [])) | excluded
         defaults = SEATS["panel_free"] if free else SEATS.get("panel_default", [])
-        from ai_worker import seat_unavailable
         seats = []
         for seat in defaults:
             if seat in skip:
                 continue
-            reason = seat_unavailable(seat)
+            reason = unavailable(seat)
             if reason:
                 print(f"跳过不可用座位 {seat}: {reason}", file=sys.stderr)
             else:
@@ -144,11 +150,11 @@ def main() -> int:
     if unknown:
         print(f"未知座位 {unknown}；可用：{list(SEATS['seats'])}", file=sys.stderr)
         return 64
-    from ai_worker import seat_unavailable, selection_snapshot
+    from ai_worker import selection_snapshot
     snapshot = selection_snapshot()
     active = []
     for seat in seats:
-        reason = seat_unavailable(seat, snapshot=snapshot)
+        reason = unavailable(seat, snapshot=snapshot)
         if reason:
             print(f"跳过不可用座位 {seat}: {reason}", file=sys.stderr)
         else:

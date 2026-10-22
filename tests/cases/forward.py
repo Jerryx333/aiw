@@ -11,6 +11,13 @@ import json, os, sys
 from pathlib import Path
 Path(os.environ['FORWARD_LOG']).write_text(json.dumps({'argv': sys.argv[1:], 'env': dict(os.environ)}))
 run = Path(os.environ['AIW_FORWARD_RUN_DIR'])
+state = Path(os.environ['AIW_STATE'])
+inflight = state / 'inflight' / (str(os.getppid()) + '.json')
+snapshot = {'argv': sys.argv[1:], 'env': dict(os.environ),
+            'prompt': Path(sys.argv[5] if sys.argv[1] == 'fixed-arg' else sys.argv[4]).read_text(),
+            'inflight': json.loads(inflight.read_text()),
+            'stale_provider': bool(os.environ.get('AIW_PROVIDER_FILE') and Path(os.environ['AIW_PROVIDER_FILE']).exists())}
+(run / 'snapshot.json').write_text(json.dumps(snapshot))
 (run / 'output.md').write_text('forward output')
 (run / 'forward.json').write_text(os.environ.get('FORWARD_META', '{"actual":"remote-seat","host":"remote"}'))
 print('forward stdout')
@@ -38,6 +45,7 @@ def forward_protocol():
             check(argv[-2:] == ['--attach', str((wd / 'attachment.txt').resolve())], argv)
             check('--verify' not in argv and '--verify-timeout' not in argv, argv)
             check(flag is None or flag in argv, argv)
+            check('AIW_FORWARD_GROUP' not in child, child)
             check(child['AIW_NO_FORWARD'] == '1' and child['AIW_MAIN'] == 'claude' and child['AIW_FORWARD_MODE'] == mode, child)
             run = Path(child['AIW_FORWARD_RUN_DIR'])
             check(run.is_absolute() and (run / 'task.txt').exists() and '全文：' in r.stderr, r)
@@ -88,7 +96,8 @@ def forward_fallback_and_exclusions():
         check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
         for source in ('AIW_PANEL_DIR', 'AIW_MAP_DIR'):
             r = sh(cmd, env=dict(env, **{source: str(t / 'batch')}))
-            check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
+            check(r.returncode == 0 and (t / 'called').exists() and 'forward stdout' in r.stdout, r)
+            (t / 'called').unlink()
         for call in [cmd[:4] + ['0'] + cmd[5:], cmd + ['--attach', 'missing.txt'], cmd + ['--effort', 'invalid']]:
             r = sh(call, env=env)
             check(r.returncode == 64 and not (t / 'called').exists(), r)
@@ -121,4 +130,51 @@ def forward_fallback_and_exclusions():
             check(any('forward.command' in error for error in validate(config)), command)
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions)}
+def forward_children_contract():
+    from ai_worker import PANEL_FORMAT
+    from support import fake_agent_use
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        provider = t / 'actual.provider'
+        original = (t / 'prompt.md').read_text()
+        for source in ('AIW_PANEL_DIR', 'AIW_MAP_DIR'):
+            provider.write_text('stale')
+            child_env = dict(env, AIW_PROVIDER_FILE=str(provider), AIW_PANEL_FORMAT='1',
+                             **{source: str(t / 'batch')})
+            r = sh(cmd, env=child_env)
+            check(r.returncode == 0 and provider.read_text() == 'remote-seat\n', r)
+            data = json.loads((t / 'called').read_text())
+            run = Path(data['env']['AIW_FORWARD_RUN_DIR'])
+            snap = json.loads((run / 'snapshot.json').read_text())
+            check('--ro' in snap['argv'] and '--no-findings' in snap['argv'], snap)
+            check(snap['env']['AIW_FORWARD_GROUP'] == str((t / 'batch').resolve()), snap)
+            check(not snap['stale_provider'], snap)
+            flight = snap['inflight']
+            check(flight['seat'] == 'qoder' and flight['run_dir'] == str(run) and
+                  flight['panel'] == (str(t / 'batch') if source == 'AIW_PANEL_DIR' else None), flight)
+            check(not list((Path(env['AIW_STATE']) / 'inflight').glob('*')), 'inflight 未清理')
+            if source == 'AIW_PANEL_DIR':
+                check(snap['env']['AIW_PANEL_FORMAT'] == '0', snap)
+            check(snap['prompt'] == original + (PANEL_FORMAT if source == 'AIW_PANEL_DIR' else ''), snap)
+            check((t / 'prompt.md').read_text() == original, '原 prompt 改变')
+            r = sh(cmd, env=dict(child_env, FORWARD_RC='3'))
+            check(r.returncode == 3 and not provider.exists(), r)
+        r = sh(cmd, env=dict(env, AIW_PANEL_DIR=str(t / 'batch'), AIW_PANEL_FORMAT='1', FORWARD_RC='69'))
+        check(r.returncode == 0 and 'qoder ok' in r.stdout, r)
+        rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
+        task = (Path(rows[-1]['run_dir']) / 'task.txt').read_text()
+        check(task.count(PANEL_FORMAT) == 1 and (t / 'prompt.md').read_text() == original, task)
+        au = fake_agent_use(t, errands=['courier'])
+        env.update(AGENT_USE_HOME=str(au), AGENT_USE_ERRAND_HOME=str(au))
+        (t / 'called').unlink()
+        call = cmd[:]; call[2] = 'courier'
+        r = sh(call, env=env)
+        check(r.returncode == 64 and '跑腿供应商' in r.stderr and not (t / 'called').exists(), r)
+        local = t / 'local.json'
+        write_legacy_local(local, {'seats': {'courier': {'kind': 'agent_use', 'provider': 'courier', 'model': ''}},
+                                   'fallback': {'qoder': ['courier']}})
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 64 and '顶替链配置错误' in r.stderr and not (t / 'called').exists(), r)
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract)}
