@@ -94,9 +94,11 @@ def validate(merged) -> list[str]:
     for key in ('seats', 'fallback', 'self_seats', 'substitute_limit'):
         if not isinstance(merged.get(key), dict):
             error(key, '对象')
-    for key in ('notify', 'findings', 'errand', 'main_exclude'):
+    for key in ('notify', 'findings', 'errand', 'main_exclude', 'forward'):
         if key in merged and not isinstance(merged[key], dict):
             error(key, '对象')
+    if isinstance(merged.get('forward'), dict):
+        strings(merged['forward'].get('command'), 'forward.command')
     seats = merged.get('seats')
     seats = seats if isinstance(seats, dict) else {}
     for name, seat in seats.items():
@@ -198,6 +200,20 @@ def validate(merged) -> list[str]:
     if 'max_concurrency' in merged:
         concurrency(merged['max_concurrency'], 'max_concurrency')
     return errors
+
+
+def forward_command(config):
+    if os.environ.get('AIW_NO_FORWARD') == '1':
+        return []
+    value = config.get('forward', {}).get('command', [])
+    if 'AIW_FORWARD' in os.environ:
+        try:
+            value = json.loads(os.environ['AIW_FORWARD'])
+        except ValueError as exc:
+            raise ConfigError('AIW_FORWARD 必须是 JSON 字符串数组') from exc
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ConfigError('AIW_FORWARD / forward.command 必须是字符串数组')
+    return value
 
 
 def load_seats(repo=None, *, tolerate_public=False):

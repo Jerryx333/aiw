@@ -79,7 +79,7 @@ STATE = Path(getenv("AIW_STATE", HERE / "state"))
 LEDGER = STATE / "seat-ledger.jsonl"
 BREAKER = STATE / "breaker.json"
 DAILY = STATE / "daily-count.json"
-from seats_config import ConfigError, load_seats, load_public
+from seats_config import ConfigError, load_seats, load_public, forward_command
 try:
     SEATS = load_seats(HERE)
 except ConfigError as error:
@@ -1967,6 +1967,14 @@ def _doctor() -> int:
     print(fingerprint_line(fingerprint(HERE, registry_info=agent_use_registry_info, adapter_home=agent_use_home)))
     registry_check(SEATS, agent_use_registry)
     local_failures = local_config(HERE)
+    try:
+        command = forward_command(SEATS)
+        status = ('被 AIW_NO_FORWARD 关闭' if os.environ.get('AIW_NO_FORWARD') == '1'
+                  else '启用 ' + Path(command[0]).name if command else '关闭')
+        print(f"派单转发：{status}")
+    except ConfigError as exc:
+        print(f"派单转发：{exc}")
+        local_failures += 1
     print(f"Discord 频道：{discord_channel() or '未配置'}；钥匙串{'有' if keychain_token() else '无'}；待发通知：{pending_count(readonly=True)}")
     print("待发通知由 aiw freecheck 或下一次通知补发。")
     print(f"host: {socket.gethostname()}   aiw: {HERE}   state: {STATE}")
@@ -2337,6 +2345,103 @@ def record_findings(workdir, seat, actual, via, ro, prompt_id, run_dir, parsed, 
         return False
 
 
+def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt):
+    role = seat if seat in ('write', 'review', 'draft') else None
+    if role is None and main_exclude_reason(seat):
+        print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
+        return 64
+    flags = set(flags)
+    if role == 'review':
+        flags.add('--ro')
+    if role == 'draft':
+        flags.add('--text')
+    text = '--text' in flags
+    ro = text or '--ro' in flags or (role is None and SEATS['seats'].get(seat, {}).get('ro_only', False))
+    if values.get('verify') and ro:
+        print('[ai-worker] --verify 只用于写任务', file=sys.stderr)
+        return 64
+    try:
+        if not timeout_s.isdigit() or int(timeout_s) <= 0:
+            raise AttachError(f'超时应为正整数秒，收到 {timeout_s!r}')
+        if not Path(workdir).is_dir():
+            raise AttachError(f'工作目录不存在：{workdir}')
+        workdir = str(Path(workdir).resolve())
+        prompt_file = str(Path(prompt_file).resolve())
+        prompt = Path(prompt_file).read_text(encoding='utf-8')
+        files = read_attachments(workdir, attach)
+    except (AttachError, OSError, UnicodeError) as exc:
+        print(f'[ai-worker] {exc}', file=sys.stderr)
+        return 64
+    argv = command + [seat, workdir, timeout_s, prompt_file]
+    argv += [flag for flag in ('--ro', '--text', '--net', '--no-fallback', '--no-findings') if flag in flags]
+    if values.get('effort') is not None:
+        argv += ['--effort', values['effort']]
+    for name, _ in files:
+        argv += ['--attach', str(Path(workdir) / name)]
+    run_dir = new_run_dir(re.sub(r'[^\w.-]', '_', seat))
+    run_dir.mkdir(parents=True, exist_ok=True)
+    write_run_file(run_dir / 'task.txt', auto_prompt_prefix(dt.datetime.now().astimezone()) + prompt + render_attachments(files))
+    env = dict(os.environ, AIW_NO_FORWARD='1', AIW_FORWARD_MODE='text' if text else 'ro' if ro else 'write',
+               AIW_FORWARD_RUN_DIR=str(run_dir))
+    env.pop('AIW_MAIN', None)
+    if main_agent() is not None:
+        env['AIW_MAIN'] = main_agent()
+    started = time.monotonic()
+    interruption = None
+    try:
+        proc = subprocess.Popen(argv, env=env)
+    except OSError as exc:
+        print(f'[ai-worker] 转发不可用（{exc}），改在本机执行', file=sys.stderr)
+        return None
+    with proc:
+        try:
+            rc = proc.wait()
+        except RunInterrupted as exc:
+            proc.send_signal(signal.SIGINT if exc.code == 130 else signal.SIGTERM)
+            proc.wait()
+            interruption, rc = exc, exc.code
+    if rc == 69:
+        print('[ai-worker] 转发不可用（rc=69），改在本机执行', file=sys.stderr)
+        return None
+    rc = rc if rc >= 0 else 128 - rc
+    attempt.update(run_dir=str(run_dir), output_saved=(run_dir / 'output.md').exists(), executed=True)
+    metadata = load_json(run_dir / 'forward.json', {}, strict=False)
+    metadata = metadata if isinstance(metadata, dict) else {}
+    actual = metadata.get('actual') if isinstance(metadata.get('actual'), str) else seat
+    host = metadata.get('host') if isinstance(metadata.get('host'), str) else None
+    kind = 'ok' if rc == 0 else 'other'
+    verify_fields = {}
+    if values.get('verify'):
+        attempt['verify_requested'] = True
+        summary = {'total': len(values['verify']), 'passed': None, 'skipped': True}
+        if rc == 0:
+            try:
+                summary, block = run_verification(values['verify'], workdir, values.get('verify_timeout', 1200), run_dir)
+                print('\n' + block, end='')
+                if summary['passed'] != summary['total']:
+                    rc = 4
+            except RunInterrupted as exc:
+                interruption, rc, summary = exc, exc.code, exc.result['verify']
+        verify_fields['verify'] = summary
+        attempt.update(verify_fields)
+    repo = None
+    try:
+        _, repo = findings.repository_identity(workdir)
+    except Exception:
+        pass
+    ledger({'executor': 'forward', 'forward_host': host, 'seat': seat, 'actual': actual,
+            'role': role, 'task_class': 'draft' if text else 'review' if ro else 'write',
+            **({'text': True} if text else {}), **verify_fields,
+            'repo': repo, 'workdir': workdir if repo is None else None, 'via': call_via(),
+            'prompt': hashlib.sha1((prompt + render_attachments(files)).encode()).hexdigest()[:10],
+            'ro': ro, 'model': 'default', 'run_dir': str(run_dir), 'kind': kind,
+            'rc': rc, 'secs': round(time.monotonic() - started, 1), 'substituted': False, 'err_tail': '',
+            **({'effort': values['effort']} if values.get('effort') else {})})
+    if interruption is not None:
+        raise interruption
+    return rc
+
+
 def dispatch(inflight: Path | None, attempt: dict, *, before_execute=None) -> int:
     with contextlib.ExitStack() as stack:
         try:
@@ -2379,6 +2484,16 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     if "--worktree" in flags and ("--ro" in flags or seat in ("review", "draft")):
         print("[ai-worker] --worktree 只用于写任务", file=sys.stderr)
         return 64
+    if '--worktree' not in flags and call_via() == 'direct':
+        try:
+            command = forward_command(SEATS)
+        except ConfigError as exc:
+            print(f'[ai-worker] {exc}', file=sys.stderr)
+            return 64
+        if command:
+            rc = forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt)
+            if rc is not None:
+                return rc
     role = None
     if seat in ('write', 'review', 'draft'):
         role = seat

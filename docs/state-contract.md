@@ -80,6 +80,8 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | host | hostname，用于本机过滤 |
 | session | 会话 ID 或 null，`CLAUDE_CODE_SESSION_ID`，没有时取 `CODEX_THREAD_ID`，用于会话过滤；旧记录可能缺失，仅在全部会话视图出现 |
 | seat / actual | 请求座位和实际座位，用于展示顶替关系 |
+| executor | 可选字符串；转发单固定为 `forward`，旧记录和本机单不写此字段 |
+| forward_host | 转发单的远端主机展示名，来自 `forward.json` 的字符串 `host`，缺失或类型错误为 null；不替代本机 `host` |
 | kind | 结果类别；判断成功只看 `kind == "ok"`，失败类型也以 kind 为准，如 `timeout`、`format`、`auth`、`transient`（供应商单次失败，顶替但不熔断）、`interrupted`、`skipped_breaker` |
 | rc | 该次尝试的子进程退出码，不是 aiw 的最终退出码；跳过记录可为 null，不作为已完成尝试统计 |
 | secs | 本次尝试耗时秒数 |
@@ -107,6 +109,8 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | repo | #8：origin remote 经 findings._repo 规范化后的仓库标识；无 git、无 origin 或解析失败为 null；同仓库不同 worktree 相同，旧记录可能缺失 |
 | workdir | #9：仅 repo 为 null 时记录工作目录的绝对真实路径，否则为 null；旧记录可能缺失 |
 | effort | 字符串，可选；codex / codex-sol 本次实际推理档位（low/medium/high），其他座位不出现；weekly.py 按 (seat, effort) 计数 |
+
+转发最终结果只记一条账本；rc=69 或命令启动失败不记转发尝试，回退后按原本机流程记账。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录远端 token 或本机文件改动统计。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
 
 ## breaker.json
 

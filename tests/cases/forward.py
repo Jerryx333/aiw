@@ -1,0 +1,124 @@
+"""派单转发协议的离线回归。"""
+from support import Path, REPO, check, json, os, sys, tempfile, worker_call, sh, write_legacy_local
+
+
+def fixture(t):
+    cmd, env, wd = worker_call(t)
+    script = t / 'fakebin' / 'forward'
+    script.parent.mkdir(exist_ok=True)
+    script.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+Path(os.environ['FORWARD_LOG']).write_text(json.dumps({'argv': sys.argv[1:], 'env': dict(os.environ)}))
+run = Path(os.environ['AIW_FORWARD_RUN_DIR'])
+(run / 'output.md').write_text('forward output')
+(run / 'forward.json').write_text(os.environ.get('FORWARD_META', '{"actual":"remote-seat","host":"remote"}'))
+print('forward stdout')
+print('forward stderr', file=sys.stderr)
+sys.exit(int(os.environ.get('FORWARD_RC', '0')))
+''')
+    script.chmod(0o755)
+    env.update(AIW_FORWARD=json.dumps([str(script), 'fixed-arg']), FORWARD_LOG=str(t / 'called'), AIW_MAIN='claude')
+    return cmd, env, wd, script
+
+
+def forward_protocol():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        (wd / 'attachment.txt').write_text('attachment')
+        for role, mode, flag in [('review', 'ro', '--ro'), ('draft', 'text', '--text'), ('write', 'write', None)]:
+            call = cmd[:6]; call[2] = role
+            call += ['--attach', 'attachment.txt', '--effort', 'high', '--no-findings', '--no-fallback']
+            if role == 'write':
+                call += ['--verify', 'echo verified > verified', '--verify-timeout', '5']
+            r = sh(call, env=env)
+            check(r.returncode == 0 and 'forward stdout' in r.stdout and 'forward stderr' in r.stderr, r)
+            data = json.loads((t / 'called').read_text()); argv = data['argv']; child = data['env']
+            check(argv[:5] == ['fixed-arg', role, str(wd.resolve()), '10', str((t / 'prompt.md').resolve())], argv)
+            check(argv[-2:] == ['--attach', str((wd / 'attachment.txt').resolve())], argv)
+            check('--verify' not in argv and '--verify-timeout' not in argv, argv)
+            check(flag is None or flag in argv, argv)
+            check(child['AIW_NO_FORWARD'] == '1' and child['AIW_MAIN'] == 'claude' and child['AIW_FORWARD_MODE'] == mode, child)
+            run = Path(child['AIW_FORWARD_RUN_DIR'])
+            check(run.is_absolute() and (run / 'task.txt').exists() and '全文：' in r.stderr, r)
+        check((wd / 'verified').read_text().strip() == 'verified', 'verify not local')
+        rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
+        check(len(rows) == 3 and all(row['executor'] == 'forward' and row['actual'] == 'remote-seat' and row['forward_host'] == 'remote' for row in rows), rows)
+        check(not (Path(env['AIW_STATE']) / 'breaker.json').exists() and not (Path(env['AIW_STATE']) / 'daily-count.json').exists(), 'local selection state changed')
+        for args in [('rate', '--pending'), ('rate', str(run), 'ok'), ('weekly', '--json')]:
+            r = sh([str(REPO / 'bin/aiw'), *args], env=env)
+            check(r.returncode == 0, r)
+        call = cmd[:]; call[2] = 'remote-only'
+        no_main = dict(env, AIW_MAIN='invalid', CLAUDECODE='', OMPCODE='', PI_CODING_AGENT='')
+        r = sh(call, env=no_main)
+        check(r.returncode == 0, r)
+        data = json.loads((t / 'called').read_text())
+        check(data['argv'][1] == 'remote-only' and 'AIW_MAIN' not in data['env'], data)
+        r = sh(cmd + ['--verify', 'exit 1'], env=env)
+        check(r.returncode == 64, r)
+        call = cmd[:6]; call[2] = 'write'
+        r = sh(call + ['--verify', 'exit 1'], env=env)
+        check(r.returncode == 4, r)
+        for meta in ['bad json', '[]', '{"actual": [], "host": 42}']:
+            r = sh(cmd, env=dict(env, FORWARD_META=meta))
+            check(r.returncode == 0, r)
+            row = json.loads((Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+            check(row['actual'] == 'qoder' and row['forward_host'] is None, row)
+
+
+def forward_fallback_and_exclusions():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        for override in [dict(FORWARD_RC='69'), dict(AIW_FORWARD='["/missing/forward"]')]:
+            call = cmd[:]; call[2] = 'review'
+            r = sh(call, env=dict(env, **override))
+            check(r.returncode == 0 and '改在本机执行' in r.stderr and '角色 review →' in r.stderr, r)
+        script.chmod(0o644)
+        r = sh(cmd, env=env)
+        check(r.returncode == 0 and '改在本机执行' in r.stderr and 'qoder ok' in r.stdout, r)
+        script.chmod(0o755)
+        r = sh(cmd, env=dict(env, FORWARD_RC='3'))
+        check(r.returncode == 3 and 'qoder ok' not in r.stdout and '改在本机执行' not in r.stderr, r)
+        for override in [dict(AIW_FORWARD='[]'), dict(AIW_NO_FORWARD='1')]:
+            (t / 'called').unlink(missing_ok=True)
+            r = sh(cmd, env=dict(env, **override))
+            check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
+        unconfigured = dict(env); unconfigured.pop('AIW_FORWARD')
+        r = sh(cmd, env=unconfigured)
+        check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
+        for source in ('AIW_PANEL_DIR', 'AIW_MAP_DIR'):
+            r = sh(cmd, env=dict(env, **{source: str(t / 'batch')}))
+            check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
+        for call in [cmd[:4] + ['0'] + cmd[5:], cmd + ['--attach', 'missing.txt'], cmd + ['--effort', 'invalid']]:
+            r = sh(call, env=env)
+            check(r.returncode == 64 and not (t / 'called').exists(), r)
+        (t / 'called').unlink(missing_ok=True)
+        check(sh(['git', 'init', '-q', str(wd)], env=env).returncode == 0, 'git init')
+        check(sh(['git', '-C', str(wd), '-c', 'user.name=test', '-c', 'user.email=test@example.invalid',
+                  'commit', '--allow-empty', '-qm', 'initial'], env=env).returncode == 0, 'git commit fixture')
+        call = cmd[:6]; call[2] = 'codex'
+        r = sh(call + ['--worktree'], env=env)
+        check(r.returncode == 0 and not (t / 'called').exists() and 'codex ok' in r.stdout, r)
+        local = t / 'local.json'
+        write_legacy_local(local, {'main_exclude': {'claude': ['remote-only']}})
+        call = cmd[:]; call[2] = 'remote-only'
+        r = sh(call, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 64 and 'main_exclude' in r.stderr and not (t / 'called').exists(), r)
+        for override, status in [({}, '启用 forward'), ({'AIW_FORWARD': '[]'}, '关闭'), ({'AIW_NO_FORWARD': '1'}, '被 AIW_NO_FORWARD 关闭')]:
+            r = sh([sys.executable, str(REPO / 'ai_worker.py'), 'doctor'], env=dict(env, **override))
+            check('派单转发：' + status in r.stdout and 'fixed-arg' not in r.stdout and not (t / 'called').exists(), r)
+        env.pop('AIW_FORWARD')
+        write_legacy_local(local, {'forward': {'command': [str(script)]}})
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and (t / 'called').exists(), r)
+        (t / 'called').unlink()
+        env['AIW_FORWARD'] = '[]'
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and not (t / 'called').exists(), r)
+        from seats_config import load_public, validate
+        for command in ['bad', [1], None]:
+            config = load_public(REPO); config['forward'] = {'command': command}
+            check(any('forward.command' in error for error in validate(config)), command)
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions)}

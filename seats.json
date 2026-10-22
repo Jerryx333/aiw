@@ -1,4 +1,7 @@
 {
+  "forward": {
+    "command": []
+  },
   "_comment": "公开座位使用 cli；fallback 定义顶替链，panel_default / panel_free 定义会诊名单，self_seats 用于去掉主会话自身，main_exclude 禁止当前主会话派给指定座位（角色、顶替、panel、点名均生效）。AIW_CONFIG 非空时指定本地覆盖文件，否则读取 ~/.config/aiw/seats.local.json；对象递归合并，列表整体替换，标量覆盖。agent_use 座位需通过本地配置添加，并依赖本机 agent-use 的对应适配器。",
   "findings": {
     "collect": true,
