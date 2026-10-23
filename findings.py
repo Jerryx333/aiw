@@ -244,7 +244,9 @@ def has_secret(text: str, context: ScanContext) -> bool:
         # 十六进制摘要（包括 git SHA）不是凭据；路径按组件检测，避免整条路径凑出高熵。
         if re.fullmatch(r"[a-fA-F0-9]+", token):
             continue
-        if (token.startswith("/") or (match.start() and text[match.start() - 1] == ".")
+        # aiw 固定状态目录前缀提供路径上下文；任意斜杠串仍整体扫描，避免漏掉 base64 密钥。
+        state_path = re.match(r"(?:state/)?(?:runs|panels|maps)/", token) and not re.search(r"[+=]", token)
+        if (state_path or token.startswith("/") or (match.start() and text[match.start() - 1] == ".")
                 or (match.end() < len(text) and text[match.end()] == "." and "/" in token)):
             candidates = token.split("/")
         else:

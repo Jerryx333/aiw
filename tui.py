@@ -285,7 +285,10 @@ def launch(args):
         name = 'aiw-' + tui_id
         callback += ' #{q:pane_current_path} ' + shlex.quote(name)
         command = 'exec ' + shlex.join(environment + ['AIW_TUI_ID=' + tui_id, 'codex', *args])
-        argv = ['tmux', 'new-session', '-s', name, command]
+        created = subprocess.run(['tmux', 'new-session', '-d', '-s', name, command])
+        if created.returncode:
+            return created.returncode
+        argv = ['tmux']
         for key, value in [('status', '3'), ('status-interval', '15'),
                            ('status-justify', 'left'), ('status-style', 'bg=default,fg=colour250'),
                            ('status-format[0]', '#(' + callback + ')'),
@@ -293,8 +296,13 @@ def launch(args):
                            ('status-format[2]', '#{E:@aiw_line3}'), ('status-left', ''),
                            ('status-right', ''), ('window-status-format', ''),
                            ('window-status-current-format', '')]:
-            argv += [';', 'set-option', '-t', name, key, value]
-        os.execvp('tmux', argv)
+            if len(argv) > 1:
+                argv += [';']
+            argv += ['set-option', '-t', name, key, value]
+        configured = subprocess.run(argv)
+        if configured.returncode:
+            return configured.returncode
+        os.execvp('tmux', ['tmux', 'attach-session', '-t', name])
 
 
 if __name__ == '__main__':

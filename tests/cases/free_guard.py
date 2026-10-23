@@ -671,6 +671,35 @@ assert w.pending_count() == 2
 
 
 
+def free_guard_notification_diagnostics():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); env = free_guard_fixture(t)
+        token = 'fake-discord-secret-abcdef123456'
+        env['DISCORD_TOKEN'] = token
+        binary = Path(env['AIW_DISCORD_USE_BIN'])
+        payload = ('prefix' * 200 + '\ncredential=' + token +
+                   '\nAuthorization: Bot header-secret\nBearer bearer-secret\n' +
+                   'https://discord.com/api/webhooks/123456/webhook-secret' +
+                   '\nlast\tline\x1b\x7f\x85')
+        binary.write_text('#!' + sys.executable + '\nimport sys\n'
+                          + 'sys.stderr.write(' + repr(payload) + ')\nsys.exit(37)\n')
+        script = "import ai_worker as w; assert w.send_discord('test') == 'send_failed'"
+        r = sh([sys.executable, '-c', script], cwd=REPO, env=env)
+        check(r.returncode == 0 and 'discord-use rc=37 stderr=' in r.stderr, r.stderr)
+        diagnostic = r.stderr.split('stderr=', 1)[1].rstrip('\n')
+        check(len(diagnostic) == 512 and len(r.stderr.splitlines()) == 1, repr(r.stderr))
+        for secret in (token, 'header-secret', 'bearer-secret', 'webhook-secret'):
+            check(secret not in r.stderr, '凭据泄露')
+        check(r'last\tline\u001b\u007f\u0085' in diagnostic, repr(diagnostic))
+        # 分类仍读取原输出；认证和凭据失败同样留下脱敏诊断。
+        for response, category in (('401 unauthorized', 'auth'), ('invalid token', 'credential')):
+            binary.write_text('#!' + sys.executable + '\nimport sys\n'
+                              + 'sys.stderr.write(' + repr(response) + ')\nsys.exit(38)\n')
+            r = sh([sys.executable, '-c',
+                    f"import ai_worker as w; assert w.send_discord('test') == {category!r}"], cwd=REPO, env=env)
+            check(r.returncode == 0 and 'rc=38' in r.stderr, r.stderr)
+
+
 def free_guard_notifications_unlocked():
     import time
     with tempfile.TemporaryDirectory() as td:
@@ -824,6 +853,7 @@ CASES = {case.__name__: case for case in (
     free_guard_model_attempts,
     free_guard_outer_timeout,
     free_guard_missing_token,
+    free_guard_notification_diagnostics,
     free_guard_notifications_unlocked,
     freecheck_disabled_retry,
     freecheck_catalog_safety,

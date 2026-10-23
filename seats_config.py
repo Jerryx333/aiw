@@ -10,7 +10,7 @@ HERE = Path(__file__).resolve().parent
 ROLE_NAMES = frozenset(('write', 'review', 'draft'))
 BUILTIN_COMMANDS = frozenset(('rate', 'note', 'findings', 'triage', 'track', 'errand', 'freecheck',
     'enable', 'doctor', 'handoff', 'route', 'panel', 'map', 'goal', 'board', 'statusline',
-    'tokens', 'weekly', 'snapshot', 'gc', 'sync', 'help'))
+    'tokens', 'weekly', 'snapshot', 'gc', 'sync', 'help', 'off', 'on', 'status', 'slot', 'tui', 'tui-status'))
 
 
 class ConfigError(Exception):

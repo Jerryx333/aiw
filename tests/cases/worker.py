@@ -991,6 +991,16 @@ def codex_dispatch_reminders():
                     check(task.index(semantic) < task.index(findings.SUFFIX), task)
             if '--ro' not in flags:
                 check('需主会话补跑' in task and '不要绕过或改测试迁就' in task and '命令和失败原因' in task, task)
+        verified_notice = ('本单验收命令由 aiw 在沙箱外运行：你只跑与改动相关的定向测试，不必自跑全量；'
+                           '沙箱导致的失败不用写进观察记录，也不用列补跑。')
+        for verify in (None, [], ['true']):
+            reminder = worker.dispatch_reminders('codex', False, str(work), verify=verify)
+            check((verified_notice in reminder) == bool(verify), reminder)
+            check(('需主会话补跑' in reminder) == (not verify), reminder)
+        r, row, _ = run(flags=('--no-fallback', '--verify', 'true'))
+        check(r.returncode == 0, r.stderr)
+        task = (Path(row['run_dir']) / 'task.txt').read_text()
+        check(verified_notice in task and '需主会话补跑' not in task, task)
         local = root / 'readonly-fallback.json'
         write_legacy_local(local, {'fallback': {'codex': ['codex-sol']}})
         args = root / 'fallback-args'

@@ -406,6 +406,8 @@ worker 只接受 `--ro --text --worktree --net --no-fallback --no-findings --all
 
 模型名用 cyan、思考强度用 magenta、分支用 yellow、上下文数值用 green；标签、改动数值和 ` | ` 分隔符用 brightblack。第三行沿用 aiw-board 的派单摘要和 fg=colour250；首单前显示上述空闲摘要（需已装 aiw-board）。缺少数据的项及分隔符省略，第二行可以为空。新建三行会话启动 Codex 时自动追加 `-c tui.status_line=[]`，隐藏 Codex 自带底栏，不需要改 `config.toml`；用户已用 `-c` / `--config` 覆盖 `tui.status_line` 时尊重该设置，不重复追加。已在 tmux 时保持当前会话单行底栏，status-right 显示派单摘要及 EXTRA，不改变行数，也不追加隐藏 Codex 自带底栏的覆盖。
 
+开启 tmux-continuum 自动恢复时，恢复完成后仍可能把客户端切走，可用 `tmux switch-client -t aiw-<id>` 切回。
+
 Codex 的 UserPromptSubmit 钩子将线程号及 transcript 路径原子写入 `state/tui/<AIW_TUI_ID>`；`/new` 后下一次用户提示即更新映射。派单也会更新线程号并保留已有 transcript 路径，嵌套会话不写映射。底栏仅读取 rollout 末尾 512KB：最近的 turn_context 提供 model、effort 和 cwd，最近的 token_count 提供 last_token_usage.input_tokens。没有 transcript 时，模型和思考强度回退读取 `${CODEX_HOME:-~/.codex}/config.toml`；git 分支与 HEAD 差异的增删行取自 turn_context.cwd，否则取当前 pane 目录，二进制文件计 0，git 超时 2 秒时忽略。上下文不足 1000 原样显示，其余显示一位小数的 k 或 M。
 
 `AIW_TUI_STATUS_EXTRA=<命令>` 可在第二行上下文后追加该命令输出的第一行非空内容（已在 tmux 时追加在派单行后）。命令按 `shlex.split` 拆分，不经 shell；3 秒超时，失败时忽略；命令应自行缓存，底栏每 15 秒调用一次。两种模式执行命令时都注入 `AIW_TUI_STATUS_ANSI=1`，声明本版本会将 SGR 颜色码转换成 tmux 颜色；自定义命令可据此决定是否输出颜色码。允许 ANSI SGR 的 30–37、90–97 前景色及 0/39 复位，其它 SGR 丢弃；转换前后清洗非 SGR 转义序列（包括非 `m` 结尾的 CSI、以 BEL 或 ST 结束的 OSC 和其它 ESC 序列）以及 C0、DEL、C1 控制字符，换行仅在选取首个非空行时保留。文本中的 `#` 自动转义，可见内容按清洗后计算，最多 120 字符，超出时以省略号结尾。

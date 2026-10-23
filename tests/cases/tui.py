@@ -163,7 +163,7 @@ def tui_launch():
         t = Path(td); b = t / 'bin'; b.mkdir(); log = t / 'tmux.jsonl'; result = t / 'codex.json'
         (b / 'dirname').symlink_to(shutil.which('dirname'))
         tmux = b / 'tmux'
-        tmux.write_text(f'#!{sys.executable}\nimport json, sys\nwith open({str(log)!r}, "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+        tmux.write_text(f'#!{sys.executable}\nimport json, os, sys\nwith open({str(log)!r}, "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\nif sys.argv[1] == "new-session": sys.exit(int(os.environ.get("FAKE_TMUX_RC", "0")))\nif sys.argv[1] == "attach-session": sys.exit(int(os.environ.get("FAKE_ATTACH_RC", "0")))\n')
         tmux.chmod(0o755)
         codex = b / 'codex'
         codex.write_text(f'#!{sys.executable}\nimport os, json, sys\nfrom pathlib import Path\nPath({str(result)!r}).write_text(json.dumps([sys.argv[1:], os.environ.get("AIW_TUI_ID"), os.environ.get("AIW_STATE")]))\n')
@@ -178,9 +178,13 @@ def tui_launch():
         args = ['--model', 'two words', "quote'", '$(touch bad)', 'semi;colon', '', 'line\nbreak']
         cmd = ['/bin/bash', str(repo / 'bin/aiw'), 'tui', *args]
         r = sh(cmd, env=env); check(r.returncode == 0, r.stderr)
-        argv = json.loads(log.read_text().splitlines()[0])
-        check(argv[:2] == ['new-session', '-s'], str(argv))
-        launch = argv[3]
+        calls = [json.loads(line) for line in log.read_text().splitlines()]
+        check(len(calls) == 3, str(calls))
+        created, options, attached = calls
+        check(created[:3] == ['new-session', '-d', '-s'], str(calls))
+        check(attached == ['attach-session', '-t', created[3]], str(calls))
+        argv = ['new-session', '-s', created[3], created[4], ';', *options]
+        launch = created[4]
         parsed = shlex.split(launch)
         check(parsed[-2:] == ['-c', 'tui.status_line=[]']
               and parsed[-len(args)-2:-2] == args and parsed[-len(args)-3] == 'codex', launch)
@@ -215,11 +219,18 @@ def tui_launch():
                 check(r.returncode == 0, r.stderr)
                 if not inside:
                     call = json.loads(log.read_text().splitlines()[0])
-                    check(sh(['/bin/sh', '-c', call[3]], env=env).returncode == 0, call[3])
+                    check(sh(['/bin/sh', '-c', call[4]], env=env).returncode == 0, call[4])
                 expected_args = args + overrides
                 if not inside and overrides == ['-c', 'model="example"']:
                     expected_args += ['-c', 'tui.status_line=[]']
                 check(json.loads(result.read_text())[0] == expected_args, result.read_text())
+        for failure_env, expected_rc in (({'FAKE_TMUX_RC': '23'}, 23), ({'FAKE_ATTACH_RC': '19'}, 19)):
+            log.unlink()
+            r = sh(cmd, env=dict(env, **failure_env))
+            calls = [json.loads(line) for line in log.read_text().splitlines()]
+            check(r.returncode == expected_rc, repr(r))
+            if 'FAKE_TMUX_RC' in failure_env:
+                check(len(calls) == 1 and calls[0][0] == 'new-session', str(calls))
         log.unlink()
         r = sh(cmd, env=dict(env, TMUX='fake', AIW_STATE='state rel'), cwd=t)
         check(r.returncode == 0, r.stderr)
@@ -242,7 +253,7 @@ def tui_launch():
             check(r.returncode == 0 and not r.stderr, repr(r))
             calls = [json.loads(line) for line in log.read_text().splitlines()]
             callback = (next(a[2] for a in calls if a[1] == 'status-right') if inside
-                        else calls[0][calls[0].index('status-format[0]') + 1])
+                        else calls[1][calls[1].index('status-format[0]') + 1])
             callback_args = shlex.split(callback[2:-1])
             check(callback_args[0] == '/usr/bin/env'
                   and 'AIW_TUI_STATUS_EXTRA=' + extra in callback_args[:-3], callback)
@@ -318,7 +329,7 @@ def tui_render():
                 check(tui._token_text(value) == expected, str(value))
             b = t / 'bin'; b.mkdir(); log = t / 'tmux.jsonl'
             tmux = b / 'tmux'
-            tmux.write_text(f'#!{sys.executable}\nimport json, sys\nwith open({str(log)!r}, "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+            tmux.write_text(f'#!{sys.executable}\nimport json, os, sys\nwith open({str(log)!r}, "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\nif sys.argv[1] == "new-session": sys.exit(int(os.environ.get("FAKE_TMUX_RC", "0")))\nif sys.argv[1] == "attach-session": sys.exit(int(os.environ.get("FAKE_ATTACH_RC", "0")))\n')
             tmux.chmod(0o755)
             extra = shlex.join([sys.executable, '-c', 'print("q 26%")'])
             with patch.dict(os.environ, PATH=str(b) + os.pathsep + os.environ['PATH'], AIW_TUI_STATUS_EXTRA=extra):

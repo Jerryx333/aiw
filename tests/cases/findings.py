@@ -90,6 +90,8 @@ def findings_secret_segments():
             # 夹在凭据中间的标识符被剥离后，凭据仍按整串判定。
             check(f.has_secret(random[:20] + '/20261011-174531-81790/' + random[20:], context), '标识符切断凭据')
             for value in (random, segmented, letters,
+                          'state/runs/' + random,
+                          'aB3d/E5gH7jK9/mN0pQ2sT4/vW6yZ8cF1iL5oR7uX9n+=',
                           'Q7m2Z9v4R8x1K6p3-N5t0W2y8C4s7H9d1-20261011144503-53420-1',
                           '20261010-162916-abcdefghijklmnop-qrstuvwx-yz012345-73190-6b28e1ea',
                           'Z8cF1iL5oR7uX9nB-20261011144503-53420-1',
@@ -99,7 +101,9 @@ def findings_secret_segments():
                           'task-run-prefix-' + random[:20], 'task_run_prefix_' + random[:20],
                           'task-run-prefix-' + random[:19], 'task_run_prefix_' + random[:19]):
                 check(f.has_secret(value, context), '随机段未命中: ' + value)
-            for value in ('20261010-162916-codex-73190-6b28e1ea',
+            for value in ('state/runs/20261023-013216-review-53315-07ca533b',
+                          'state/runs/20261023-090647-codex-7351-',
+                          '20261010-162916-codex-73190-6b28e1ea',
                           '20261010-162916-codex-sol-73190-6b28e1ea',
                           'runs/20261010-171024-workbuddy-22968-6351683f',
                           '20261011-174531-workbuddy-cn-81790-ee6ddbb2',

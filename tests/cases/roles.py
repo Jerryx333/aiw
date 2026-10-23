@@ -55,6 +55,15 @@ def role_write_skips_readonly():
             check(r.returncode == 2 and reason in r.stderr, r.stdout + r.stderr)
 
 
+def builtin_commands_match_dispatch():
+    import re
+    from seats_config import BUILTIN_COMMANDS
+    source = (REPO / 'bin/aiw').read_text().split('case "$cmd" in', 1)[1]
+    commands = {name for arm in re.findall(r'^  ([a-zA-Z0-9_|-]+)\)', source, re.M)
+                for name in arm.split('|')} - {'-h', '--help'}
+    check(commands == BUILTIN_COMMANDS, str(commands ^ BUILTIN_COMMANDS))
+
+
 def role_name_conflict():
     import seats_config as c
     for name in ('write', 'review', 'draft'):
@@ -307,7 +316,7 @@ def role_preselect_readonly():
             check(snapshot.call_count == 1, snapshot.call_count)
 
 
-CASES = {f.__name__: f for f in (role_resolve_matrix, role_write_skips_readonly, role_name_conflict, role_review_forces_ro,
+CASES = {f.__name__: f for f in (role_resolve_matrix, role_write_skips_readonly, role_name_conflict, builtin_commands_match_dispatch, role_review_forces_ro,
     role_write_codex_main_refused, role_doctor_mapping, claude_write_argv, claude_model_opus,
     route_role_seats, panel_skips_unavailable, panel_single_family_hint, map_default_role, role_text_seat_write_hint, role_ro_argv_enforced, seat_disabled_everywhere,
     legacy_local_config_roles, panel_explicit_unavailable, role_preselect_readonly)}

@@ -847,7 +847,7 @@ def keychain_token():
 
 
 def send_discord(message):
-    """只返回失败类别；凭据仅经子进程环境传递，响应绝不进入日志。"""
+    """返回失败类别；凭据仅经子进程环境传递，失败诊断脱敏后限长记录。"""
     channel = discord_channel()
     if not channel:
         return "missing_channel"
@@ -862,6 +862,14 @@ def send_discord(message):
                            env=env, capture_output=True, text=True, timeout=20)
         if p.returncode == 0:
             return None
+        diagnostic = p.stderr.replace(token, "[REDACTED]")
+        diagnostic = re.sub(r"(?i)\b(?:authorization\s*:\s*|bearer\s+)[^\r\n]+",
+                            "[REDACTED]", diagnostic)
+        diagnostic = re.sub(r"(?i)(https://(?:[\w-]+\.)?discord(?:app)?\.com/api(?:/v\d+)?/webhooks/\d+/)[^\s/?#]+",
+                            r"\1[REDACTED]", diagnostic)
+        diagnostic = json.dumps(diagnostic, ensure_ascii=False)[1:-1]
+        diagnostic = re.sub(r"[\x7f-\x9f]", lambda m: f"\\u{ord(m[0]):04x}", diagnostic)
+        print(f"[ai-worker] discord-use rc={p.returncode} stderr={diagnostic[-512:]}", file=sys.stderr)
         response = (p.stderr + p.stdout).lower()
         if "401" in response or "unauthorized" in response:
             return "auth"
@@ -1784,14 +1792,16 @@ def codex_workspace_write(seat: str, ro: bool) -> bool:
             and any(argv[i:i + 2] == ["--sandbox", "workspace-write"] for i in range(len(argv))))
 
 
-def dispatch_reminders(seat: str, ro: bool, workdir: str, net: bool = False) -> str:
+def dispatch_reminders(seat: str, ro: bool, workdir: str, net: bool = False,
+                       verify: list[str] | None = None) -> str:
     if seat_adapter(seat) != "codex" or SEATS["seats"][seat].get("kind") == "agent_use":
         return ""
     sandbox = ""
     if codex_workspace_write(seat, ro):
         access = "本单已开放网络和本地端口（--net）" if net else "默认不能联网、不能监听本地端口（需要时由主会话加 --net 重派）"
-        sandbox = (f"沙箱说明：{access}，只能写工作目录及本单明确开放的 worktree Git 目录。"
-                   "验收命令因沙箱失败时不要绕过或改测试迁就；在回答里列「需主会话补跑」小节，写出命令和失败原因。\n")
+        testing = ("本单验收命令由 aiw 在沙箱外运行：你只跑与改动相关的定向测试，不必自跑全量；沙箱导致的失败不用写进观察记录，也不用列补跑。"
+                   if verify else "验收命令因沙箱失败时不要绕过或改测试迁就；在回答里列「需主会话补跑」小节，写出命令和失败原因。")
+        sandbox = f"沙箱说明：{access}，只能写工作目录及本单明确开放的 worktree Git 目录。{testing}\n"
         if worktree_writable_roots(workdir):
             sandbox += ("本目录是 linked worktree，git add 可用；git commit 及其它改 refs 的操作会被沙箱拒绝，"
                         "不要尝试，改动留在暂存区，由主会话提交。\n")
@@ -2765,7 +2775,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             if kind != "cli" and not attachments_warned:
                                 warn_large_attachments(attachment_files)
                                 attachments_warned = True
-                            task_prompt = prompt + render_attachments(attachment_files, kind) + dispatch_reminders(s, ro, workdir, net)
+                            task_prompt = prompt + render_attachments(attachment_files, kind) + dispatch_reminders(s, ro, workdir, net, verify)
                             if collect:
                                 task_prompt += "\n\n" + findings.SUFFIX
                             if os.environ.get("AIW_PANEL_FORMAT") == "1" and os.environ.get("AIW_PANEL_DIR"):
