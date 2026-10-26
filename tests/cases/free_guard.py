@@ -569,6 +569,69 @@ with patch.object(w, 'state_lock', lock), patch.object(w, 'queue_notification', 
         check(r.returncode == 0, r.stdout + r.stderr)
 
 
+def freecheck_runner_hosts():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); env = free_guard_fixture(t)
+        env['AIW_LAUNCH_AGENTS_DIR'] = str(t / 'agents')
+        script = """import contextlib, io, os
+from unittest.mock import patch
+import freecheck as f
+w = f.w
+cfg = {'provider': 'test-provider', 'free_guard': True}
+result = {'kind': 'ok', 'rc': 0, 'secs': 0}
+ledger = w.STATE / 'seat-ledger.jsonl'
+failures = w.STATE / 'freecheck-failures.json'
+w.STATE.mkdir(parents=True, exist_ok=True)
+failures.write_text('{"preserve": true}')
+cases = [({}, {}, True), ({'runner_hosts': []}, {}, True),
+         ({'runner_hosts': ['other-host']}, {}, False),
+         ({'runner_hosts': [' RuNnEr-HoSt.example.invalid ']}, {}, True),
+         ({'runner_hosts': ['other-host']}, {'AIW_NO_FORWARD': '1'}, True),
+         ({'command': [], 'runner_hosts': ['other-host']}, {}, True),
+         ({'runner_hosts': ['other-host']}, {'AIW_FORWARD': '[]'}, True),
+         ({'command': [], 'runner_hosts': ['other-host']}, {'AIW_FORWARD': '["forward"]'}, False)]
+with patch('socket.gethostname', return_value='runner-host.local'), \\
+     patch.object(w, 'errand_names', return_value=[]), \\
+     patch.object(w, 'disabled_seat', return_value=False), \\
+     patch.object(w, 'available_models', return_value=['test-model']):
+    for forward, environ, runs in cases:
+        w.SEATS = {'seats': {'test-seat': cfg}, 'forward': {'command': ['forward'], **forward}}
+        ledger.unlink(missing_ok=True)
+        before = failures.read_bytes()
+        out = io.StringIO()
+        with patch.dict(os.environ, environ), patch.object(w, 'retry_notifications') as retry, \\
+             patch.object(w, 'run_seat', return_value=result) as run, \\
+             patch.object(f, 'record_probe', return_value=0) as record, \\
+             contextlib.redirect_stdout(out):
+            run.side_effect = lambda *a, **kw: (retry.assert_called_once(), result)[1]
+            assert f.check() == 0
+            retry.assert_called_once()
+            assert run.call_count == record.call_count == int(runs)
+        assert ledger.exists() == runs
+        if runs:
+            assert len(ledger.read_text().splitlines()) == 1
+        else:
+            assert out.getvalue().strip() == '本机派单转发到执行端（forward.runner_hosts 不含本机），跳过探测'
+        assert failures.read_bytes() == before
+    w.SEATS['forward'] = {'command': ['forward'], 'runner_hosts': ['other-host']}
+    out = io.StringIO()
+    with patch.object(f.subprocess, 'run') as launch, contextlib.redirect_stdout(out):
+        assert f.install() == 0
+        launch.assert_not_called()
+        directory = f.Path(os.environ['AIW_LAUNCH_AGENTS_DIR'])
+        assert not directory.exists()
+        assert '不安装每日检查；已安装的可用 aiw freecheck --uninstall 卸载' in out.getvalue()
+        directory.mkdir()
+        path = directory / (f.LABEL + '.plist')
+        path.write_bytes(b'existing plist')
+        assert f.install() == 0 and path.read_bytes() == b'existing plist'
+        assert f.install(True) == 0 and not path.exists()
+        assert launch.call_count == 1 and launch.call_args.args[0][1] == 'bootout'
+"""
+        r = sh([sys.executable, '-c', script], cwd=REPO, env=env)
+        check(r.returncode == 0, r.stdout + r.stderr)
+
+
 def freecheck_install():
     import plistlib
     with tempfile.TemporaryDirectory() as td:
@@ -850,6 +913,7 @@ CASES = {case.__name__: case for case in (
     freecheck,
     freecheck_failure_streak,
     freecheck_install,
+    freecheck_runner_hosts,
     free_guard_model_attempts,
     free_guard_outer_timeout,
     free_guard_missing_token,

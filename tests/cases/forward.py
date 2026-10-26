@@ -177,4 +177,46 @@ def forward_children_contract():
         check(r.returncode == 64 and '顶替链配置错误' in r.stderr and not (t / 'called').exists(), r)
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract)}
+def forward_runner_hosts_config():
+    import contextlib
+    import io
+    from unittest.mock import patch
+    import seats_config as c
+    import doctor_config as d
+    with tempfile.TemporaryDirectory() as td:
+        local = Path(td) / 'local.json'
+        for hosts in ('runner-host', None, {}, [1], [''], [' \t '], ['runner-host', False]):
+            config = c.merge(c.load_public(REPO), {'forward': {'command': ['forward'], 'runner_hosts': hosts}})
+            check(any('forward.runner_hosts' in e for e in c.validate(config)), hosts)
+            local.write_text(json.dumps(config))
+            with patch.dict(os.environ, AIW_CONFIG=str(local)):
+                try:
+                    c.load_seats(REPO)
+                    check(False, '非法 runner_hosts 被接受')
+                except c.ConfigError as exc:
+                    check('forward.runner_hosts' in str(exc), str(exc))
+        for hosts in ([], ['runner-host'], ['RUNNER-HOST.example.invalid']):
+            config['forward']['runner_hosts'] = hosts
+            check(c.validate(config) == [], hosts)
+            with patch('socket.gethostname', return_value='runner-host.local'):
+                check(c.forward_runs_here(config), hosts)
+            check(c.forward_runs_here(config, hostname='runner-host.local'), hosts)
+        write_legacy_local(local, {'forward': {'command': ['forward'], 'runner_hosts': ['other-host.example.invalid']}})
+        with patch.dict(os.environ, AIW_CONFIG=str(local)), contextlib.redirect_stdout(io.StringIO()) as output:
+            check(d.local_config(REPO) == 0, output.getvalue())
+        check('未知键路径' not in output.getvalue(), output.getvalue())
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        env['AIW_CONFIG'] = str(local)
+        probe = """from unittest.mock import patch
+import ai_worker as w
+with patch('socket.gethostname', return_value='runner-host.local'):
+    w.doctor()
+"""
+        for extra, skipped in (({}, True), ({'AIW_NO_FORWARD': '1'}, False), ({'AIW_FORWARD': '[]'}, False)):
+            r = sh([sys.executable, '-c', probe], env=dict(env, **extra), cwd=REPO)
+            line = next(line for line in r.stdout.splitlines() if line.startswith('派单转发：'))
+            check(('；本机非执行端，freecheck 跳过' in line) == skipped, r)
+            check('other-host' not in r.stdout and 'runner_hosts' not in r.stdout, r)
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config)}

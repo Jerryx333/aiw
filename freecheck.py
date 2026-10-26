@@ -14,11 +14,15 @@ import urllib.request
 from pathlib import Path
 
 import ai_worker as w
+from seats_config import forward_runs_here
 
 LABEL = 'com.aiw.freecheck'
 
 
 def install(uninstall=False):
+    if not uninstall and not forward_runs_here(w.SEATS):
+        print('本机派单转发到执行端（forward.runner_hosts 不含本机），不安装每日检查；已安装的可用 aiw freecheck --uninstall 卸载')
+        return 0
     directory = Path(os.environ.get('AIW_LAUNCH_AGENTS_DIR', str(Path.home() / 'Library/LaunchAgents'))).expanduser()
     path = directory / (LABEL + '.plist')
     domain = f'gui/{os.getuid()}'
@@ -133,8 +137,11 @@ def record_probe(seat, cfg, model, result):
 
 
 def check():
-    errands = w.errand_names()
     w.retry_notifications()
+    if not forward_runs_here(w.SEATS):
+        print('本机派单转发到执行端（forward.runner_hosts 不含本机），跳过探测')
+        return 0
+    errands = w.errand_names()
     results = []
     newly_disabled = False
     seen = set()

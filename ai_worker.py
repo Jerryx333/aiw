@@ -79,7 +79,7 @@ STATE = Path(getenv("AIW_STATE", HERE / "state"))
 LEDGER = STATE / "seat-ledger.jsonl"
 BREAKER = STATE / "breaker.json"
 DAILY = STATE / "daily-count.json"
-from seats_config import ConfigError, load_seats, load_public, forward_command
+from seats_config import ConfigError, load_seats, load_public, forward_command, forward_runs_here
 try:
     SEATS = load_seats(HERE)
 except ConfigError as error:
@@ -1991,6 +1991,8 @@ def _doctor() -> int:
         command = forward_command(SEATS)
         status = ('被 AIW_NO_FORWARD 关闭' if os.environ.get('AIW_NO_FORWARD') == '1'
                   else '启用 ' + Path(command[0]).name if command else '关闭')
+        if command and not forward_runs_here(SEATS):
+            status += '；本机非执行端，freecheck 跳过'
         print(f"派单转发：{status}")
     except ConfigError as exc:
         print(f"派单转发：{exc}")

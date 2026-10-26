@@ -4,6 +4,8 @@
 
 公开配置为 `"forward": {"command": []}`，空数组表示关闭。在私有 `seats.local.json` 设置 `{"forward": {"command": ["<命令>", "<参数>"]}}`，数组元素必须都是字符串。环境变量 `AIW_FORWARD`（JSON 字符串数组）覆盖配置；`AIW_NO_FORWARD=1` 优先强制关闭。`aiw doctor` 显示关闭、启用及命令第一个元素的 basename、或被 `AIW_NO_FORWARD` 关闭，不显示其余参数。公开仓库只提供通用协议，传输方式与远端路径映射由用户命令负责。
 
+可选 `forward.runner_hosts` 指定执行端，例如 `{"forward": {"command": ["<命令>"], "runner_hosts": ["runner-host"]}}`。该字段必须是字符串数组，每个元素去空白后非空；允许空数组。比较时本机 `socket.gethostname()` 和配置值均取第一个 `.` 之前的短名并忽略大小写，配置值可写 FQDN（如 `runner-host.example.invalid`）。转发启用且名单非空时，仅名单内机器进行 freecheck；缺失或空数组保持原行为。`AIW_FORWARD` 只覆盖 command，不改变名单；command 为空或 `AIW_NO_FORWARD=1` 时仍在本机探测。该名单不限制普通派单转发，执行端仍可通过转发命令 rc=69 回退本机。doctor 对非执行端追加「本机非执行端，freecheck 跳过」，不显示名单内容。
+
 四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色名原样交给远端解析；显式座位先检查本机 `main_exclude`，允许远端独有、未列入本机 SEATS 的座位。本机座位能力、角色候选、熔断和顶替配额不参与转发选择。
 
 命令使用 argv 调用，不经过 shell：
@@ -170,6 +172,8 @@ aiw freecheck --uninstall   # 卸载每日检查
 aiw enable your-provider:your-model # 仅用户确认仍免费后恢复该模型
 aiw enable local-text            # 仅恢复旧座位条目
 ```
+
+转发启用且非空 `forward.runner_hosts` 不含本机时，freecheck 先补发待发通知，再打印跳过说明并返回 rc=0；不探测、不写账本、不改 freecheck-failures.json。`--install` 在创建目录或写 plist 之前返回 rc=0 并提示不安装；已安装的任务需用 `aiw freecheck --uninstall` 卸载，卸载不受名单限制。
 
 freecheck 跳过旧座位条目及已停用候选，对每个唯一 provider:model 只探测一次，固定模型并按适配器能力禁用轮换，用相同 agent-use 路径发送 `Reply with exactly: FREECHECK_OK`，只读、不顶替、每模型超时 120 秒。非收费失败在 STATE/freecheck-failures.json 中按 provider:model（无模型时用 provider）记录连续次数及最近 kind/reason，达到两次入队通知，同一段连续失败只提醒一次，成功后清零；免费时段外、活动到期和已停用分支不计数，记录文件缺失或损坏按空处理。通过本地配置接入 opencode provider 时，另读取 `$AGENT_USE_HOME/config/dispatcher.json` 的 `default_model`、`models`、`options.fallback_models` 中的 `-free` 模型，与 Zen `/zen/v1/models` 比较：以 `User-Agent: aiw-freecheck/1` 拉取，只有格式合法且至少 10 项才判定：全部下架停用，部分下架仅提醒（同组只一次），拉取失败或目录少于 10 项只记日志，不判定、不提醒；`AIW_ZEN_MODELS_URL` 可覆盖并支持 `file://` 离线测试。
 

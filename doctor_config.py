@@ -369,6 +369,9 @@ def local_config(repo):
         key = '.'.join(parts)
         new_seat = len(parts) >= 2 and parts[0] == 'seats' and parts[1] in new_seats
         known_optional = (len(parts) == 3 and parts[0] == "seats" and parts[2] in seat_fields) or parts in (("map_default",), ("errand",), ("errand", "home"))
+        if parts == ('forward', 'runner_hosts') or (len(parts) == 3 and
+                parts[:2] == ('forward', 'runner_hosts') and parts[2].isdigit()):
+            known_optional = True
         if len(parts) == 2 and parts[0] in ('fallback', 'substitute_limit', 'self_seats', 'main_exclude'):
             known_optional = parts[1] in known_seats or (parts[0] in ('self_seats', 'main_exclude') and parts[1] in ('claude', 'codex', 'pi', 'omp'))
         if base is missing and not new_seat and not known_optional and (not parts or not parts[-1].isdigit()):

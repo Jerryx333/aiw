@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import socket
 import string
 from pathlib import Path
 
@@ -99,6 +100,12 @@ def validate(merged) -> list[str]:
             error(key, '对象')
     if isinstance(merged.get('forward'), dict):
         strings(merged['forward'].get('command'), 'forward.command')
+        if 'runner_hosts' in merged['forward']:
+            hosts = merged['forward']['runner_hosts']
+            if strings(hosts, 'forward.runner_hosts'):
+                for index, host in enumerate(hosts):
+                    if not host.strip():
+                        error(f'forward.runner_hosts[{index}]', '非空字符串')
     seats = merged.get('seats')
     seats = seats if isinstance(seats, dict) else {}
     for name, seat in seats.items():
@@ -214,6 +221,15 @@ def forward_command(config):
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ConfigError('AIW_FORWARD / forward.command 必须是字符串数组')
     return value
+
+
+def forward_runs_here(config, hostname=None) -> bool:
+    hosts = config.get('forward', {}).get('runner_hosts', [])
+    if not forward_command(config) or not hosts:
+        return True
+    hostname = socket.gethostname() if hostname is None else hostname
+    return hostname.split('.', 1)[0].casefold() in {
+        host.strip().split('.', 1)[0].casefold() for host in hosts}
 
 
 def load_seats(repo=None, *, tolerate_public=False):
