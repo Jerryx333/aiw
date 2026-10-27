@@ -219,4 +219,21 @@ with patch('socket.gethostname', return_value='runner-host.local'):
             check('other-host' not in r.stdout and 'runner_hosts' not in r.stdout, r)
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config)}
+def forward_skips_disabled_seat():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        local = t / 'local.json'
+        write_legacy_local(local, {'seats': {'qoder': {'disabled': True}}})
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 2 and '已被配置停用' in r.stderr and not (t / 'called').exists() and 'qoder ok' not in r.stdout, r)
+        # 角色由执行端按它自己的配置选座位，照旧转发；启用后点名座位也照旧转发。
+        call = cmd[:]; call[2] = 'review'
+        r = sh(call, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and (t / 'called').exists(), r)
+        (t / 'called').unlink()
+        write_legacy_local(local, {'seats': {'qoder': {'disabled': False}}})
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and (t / 'called').exists(), r)
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat)}

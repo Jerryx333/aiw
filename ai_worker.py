@@ -2377,6 +2377,11 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     if role is None and main_exclude_reason(seat):
         print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
         return 64
+    # 本机配置停用的点名座位不转发：执行端按它自己的配置判断，看不到这里的停用。
+    disabled = disabled_seat(seat) if role is None else None
+    if disabled and (disabled.get("config_disabled") or disabled.get("disabled_by_user")):
+        print_disabled(seat, disabled)
+        return 2
     flags = set(flags)
     if role == 'review':
         flags.add('--ro')
