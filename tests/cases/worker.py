@@ -1640,7 +1640,34 @@ assert original_mask(signal.SIG_BLOCK, set()) == initial_mask, '退出后屏蔽�
 
 
 
+def write_slot_dispatch():
+    import fcntl
+    import slot
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        run, _, _, _, _ = findings_worker_fixture(root)
+        slots = root / 'slots'
+        base = dict(AIW_SLOT_DIR=str(slots), AIW_SLOT_PRESSURE_CMD='/usr/bin/true')
+        # 写单整程持有写名额；验收另占测试名额。
+        r, row, _ = run(flags=('--no-fallback', '--verify',
+                               'test -f "$AIW_SLOT_DIR/write-0.json" && test -f "$AIW_SLOT_DIR/slot-0.json"'), **base)
+        check(r.returncode == 0 and row['verify']['passed'] == 1, r.stderr)
+        check(not list(slots.glob('*.json')), '派单结束应释放名额')
+        r, _, _ = run(flags=('--no-fallback',), AIW_MAX_WRITES='bad', **base)
+        check(r.returncode == 0 and '按 4 处理' in r.stderr, r.stderr)
+        r, row, _ = run(flags=('--no-fallback', '--verify', 'true'), AIW_TEST_SLOTS='0', **base)
+        check(r.returncode == 0 and '拿测试名额失败' in r.stderr and row['verify']['passed'] == 1, r.stderr)
+        # 写名额占满时，只读单和嵌套写单都不排队。
+        with slot.open_lock(slots / 'write-0.lock') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for flags, extra in ((('--ro', '--no-fallback'), {}),
+                                 (('--no-fallback', '--allow-nested'), {'AIW_NESTED': '1'})):
+                r, _, _ = run(flags=flags, AIW_MAX_WRITES='1', **base, **extra)
+                check(r.returncode == 0 and '排队中' not in r.stderr, f'{flags}: {r.stderr}')
+
+
 CASES = {case.__name__: case for case in (
+    write_slot_dispatch,
     worker_stdout_newline,
     run_dir_persist,
     write_changes_report,

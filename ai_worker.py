@@ -1322,7 +1322,7 @@ def run_verification(commands, workdir, timeout, run_dir):
         except RunInterrupted as e:
             e.result["verify"] = {"total": len(commands), "passed": 0, "secs": 0, "interrupted": True}
             raise
-        except OSError as e:
+        except (OSError, ValueError) as e:
             print(f"[ai-worker] 警告：拿测试名额失败，直接验收：{e}", file=sys.stderr)
         return _run_verification(commands, workdir, timeout, run_dir)
 
@@ -2528,12 +2528,15 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         summary = {'total': len(values['verify']), 'passed': None, 'skipped': True}
         if rc == 0:
             try:
-                summary, block = run_verification(values['verify'], workdir, values.get('verify_timeout', 1200), run_dir)
+                with deferred_signals():
+                    summary, block = run_verification(values['verify'], workdir, values.get('verify_timeout', 1200), run_dir)
                 print('\n' + block, end='')
                 if summary['passed'] != summary['total']:
                     rc = 4
             except RunInterrupted as exc:
-                interruption, rc, summary = exc, exc.code, exc.result['verify']
+                # 延后交付的信号不带 verify：用已拿到的结果并标记中断。
+                interruption, rc = exc, exc.code
+                summary = exc.result.get('verify', {**summary, 'interrupted': True})
         verify_fields['verify'] = summary
         attempt.update(verify_fields)
     repo = None
