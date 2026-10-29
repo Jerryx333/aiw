@@ -335,7 +335,7 @@ def slot_build_gate():
     with Fixture() as f:
         fake = f.root / "bin"
         fake.mkdir()
-        for name in ("swift", "xcodebuild"):
+        for name in ("swift", "xcodebuild", "go"):
             tool = fake / name
             tool.write_text('#!/bin/sh\necho "held=${AIW_SLOT_HELD-} $*"\n')
             tool.chmod(0o755)
@@ -353,7 +353,16 @@ def slot_build_gate():
                 (("swift", "run", "App"), "held= run App"),
                 (("swift", "--version"), "held= --version"),
                 (("xcodebuild", "-scheme", "A", "build"), "held=1 -jobs 3 -scheme A build"),
-                (("xcodebuild", "-version"), "held= -version")):
+                (("xcodebuild", "-version"), "held= -version"),
+                (("go", "build", "./..."), "held=1 build -p 3 ./..."),
+                (("go", "test", "-p", "2", "./..."), "held=1 test -p 2 ./..."),
+                (("go", "test", "-p=1", "-run", "X"), "held=1 test -p=1 -run X"),
+                (("go", "vet", "./..."), "held=1 vet -p 3 ./..."),
+                (("go", "tool", "mygo", "build", "-skip-dmg"), "held=1 tool mygo build -skip-dmg"),
+                (("go", "tool", "mygo", "dev"), "held= tool mygo dev"),
+                (("go", "run", "."), "held= run ."),
+                (("go", "version"), "held= version"),
+                (("go", "env", "GOPATH"), "held= env GOPATH")):
             result = call(*args)
             check(result.returncode == 0 and result.stdout.strip() == expected,
                   f"{args}: {result.stdout!r} {result.stderr!r}")
@@ -365,6 +374,25 @@ def slot_build_gate():
         missing = subprocess.run([str(REPO / "shims" / "swift"), "build"], capture_output=True, text=True,
                                  env=dict(f.env, PATH=f"{REPO / 'shims'}:/nonexistent"), timeout=4)
         check(missing.returncode == 127, "找不到真命令时不能调回自己")
+
+
+def slot_build_gate_path():
+    # path.zsh 只在 agent 会话里生效：把 shims 挪到最前，导出 AIW_SHIMS，并用 GOFLAGS 给绕过 shims 的 go 限并行。
+    script = REPO / "shims" / "path.zsh"
+    def source(**env):
+        base = {"HOME": os.environ.get("HOME", "/tmp"), "PATH": "/usr/bin:/bin", "AIW_BUILD_JOBS": "3"}
+        result = subprocess.run(["zsh", "-fc", f'source "{script}"; print -r -- "$PATH|${{AIW_SHIMS-}}|${{GOFLAGS-}}"'],
+                                env=dict(base, **env), capture_output=True, text=True, timeout=4)
+        check(result.returncode in (0, 1), result.stderr)
+        return result.stdout.strip().split("|")
+    shims = str((REPO / "shims").resolve())
+    path, exported, goflags = source(CLAUDECODE="1")
+    check(path.split(":")[0] == shims and exported == shims and goflags == "-p=3", (path, exported, goflags))
+    check(source(AIW_NESTED="1", GOFLAGS="-mod=mod")[2] == "-mod=mod -p=3", "已有 GOFLAGS 时追加")
+    check(source(CLAUDECODE="1", GOFLAGS="-p=2")[2] == "-p=2", "已有 -p 时不改")
+    path, exported, goflags = source(PATH=f"/usr/bin:{shims}:/bin", CLAUDECODE="1")
+    check(path == f"{shims}:/usr/bin:/bin", f"挪到最前且不重复：{path}")
+    check(source() == ["/usr/bin:/bin", "", ""], "主人终端不动")
 
 
 CASES = {name: value for name, value in globals().copy().items()
