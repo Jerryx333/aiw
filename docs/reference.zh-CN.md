@@ -6,7 +6,7 @@
 
 可选 `forward.runner_hosts` 指定执行端，例如 `{"forward": {"command": ["<命令>"], "runner_hosts": ["runner-host"]}}`。该字段必须是字符串数组，每个元素去空白后非空；允许空数组。比较时本机 `socket.gethostname()` 和配置值均取第一个 `.` 之前的短名并忽略大小写，配置值可写 FQDN（如 `runner-host.example.invalid`）。转发启用且名单非空时，仅名单内机器进行 freecheck；缺失或空数组保持原行为。`AIW_FORWARD` 只覆盖 command，不改变名单；command 为空或 `AIW_NO_FORWARD=1` 时仍在本机探测。该名单不限制普通派单转发，执行端仍可通过转发命令 rc=69 回退本机。doctor 对非执行端追加「本机非执行端，freecheck 跳过」，不显示名单内容。
 
-四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色名原样交给远端解析；显式座位先检查本机 `main_exclude`，再检查本机配置的停用（`disabled: true` 或 `disabled_by_user`）：停用的座位不转发，rc=2，不顶替（执行端看不到本机的停用）；允许远端独有、未列入本机 SEATS 的座位。本机座位能力、角色候选、熔断和顶替配额不参与转发选择。
+四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色名原样交给远端解析；显式座位先检查本机 `main_exclude`，再检查本机配置的停用（`disabled: true` 或 `disabled_by_user`）：停用的座位不转发，rc=2，不顶替（执行端看不到本机的停用）；允许远端独有、未列入本机 SEATS 的座位。转发时把本机配置停用的座位（`disabled: true` 或 `disabled_by_user`）和上游带来的 `AIW_SKIP_SEATS` 合在一起，用逗号连成 `AIW_SKIP_SEATS` 交给转发命令；执行端把其中的座位当作停用（点名拒绝，角色选择和顶替都跳过），所以按角色派单也不会选到发起端停用的座位。没有停用座位时不带这个变量。本机座位能力、角色候选、熔断和顶替配额不参与转发选择。
 
 命令使用 argv 调用，不经过 shell：
 

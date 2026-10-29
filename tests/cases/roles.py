@@ -265,6 +265,23 @@ def seat_disabled_everywhere():
         check(any('配置停用' in f.read_text() for f in archived), archived)
 
 
+def seat_skipped_by_caller():
+    """转发来的 AIW_SKIP_SEATS：执行端本机没停用，也按停用处理（点名、角色、顶替都不用它）。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); local = t/'local.json'
+        local.write_text(json.dumps({'fallback': {'codex': ['codex-sol']}}))
+        cmd, env, wd = worker_call(t, AIW_CONFIG=str(local), AIW_MAIN='claude', AIW_NO_FORWARD='1',
+                                   AIW_SKIP_SEATS='codex-sol, bad name,')
+        for seat in ('codex-sol', 'review', 'codex'):
+            cmd[2] = seat
+            r = sh(cmd + ['--no-findings'], env=dict(env, FAKE_CODEX='quota') if seat == 'codex' else env)
+            if seat == 'review':
+                check(r.returncode == 0 and '座位 claude' in r.stderr, r.stderr)
+            else:
+                check(r.returncode != 0 and '派单方停用' in r.stderr, r.stderr)
+            check('实际执行方：codex-sol' not in r.stderr, r.stderr)
+
+
 def legacy_local_config_roles():
     import seats_config as c
     with tempfile.TemporaryDirectory() as td:
@@ -318,7 +335,7 @@ def role_preselect_readonly():
 
 CASES = {f.__name__: f for f in (role_resolve_matrix, role_write_skips_readonly, role_name_conflict, builtin_commands_match_dispatch, role_review_forces_ro,
     role_write_codex_main_refused, role_doctor_mapping, claude_write_argv, claude_model_opus,
-    route_role_seats, panel_skips_unavailable, panel_single_family_hint, map_default_role, role_text_seat_write_hint, role_ro_argv_enforced, seat_disabled_everywhere,
+    route_role_seats, panel_skips_unavailable, panel_single_family_hint, map_default_role, role_text_seat_write_hint, role_ro_argv_enforced, seat_disabled_everywhere, seat_skipped_by_caller,
     legacy_local_config_roles, panel_explicit_unavailable, role_preselect_readonly)}
 
 

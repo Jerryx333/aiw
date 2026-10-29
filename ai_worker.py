@@ -162,6 +162,8 @@ def seat_policy_unavailable(seat, *, snapshot=None):
     if entry:
         if entry.get('disabled_by_user'):
             return f"已被用户停用：{entry['disabled_by_user']}"
+        if entry.get('disabled_by_caller'):
+            return '已被派单方停用（AIW_SKIP_SEATS）'
         return '已停用（disabled）'
     return None
 
@@ -799,12 +801,25 @@ def available_models(cfg):
             if not m or f"{cfg['provider']}:{m}" not in disabled]
 
 
+def caller_skipped():
+    """派单方停用的座位（AIW_SKIP_SEATS，逗号分隔）：转发时由发起端带来，执行端按停用处理。"""
+    names = os.environ.get("AIW_SKIP_SEATS", "").split(",")
+    return {name.strip() for name in names if re.fullmatch(r"[A-Za-z0-9][\w.-]*", name.strip())}
+
+
+def local_off_seats():
+    """本机配置停用的座位：disabled: true 或 disabled_by_user。"""
+    return {name for name, cfg in SEATS["seats"].items() if cfg.get("disabled") or cfg.get("disabled_by_user")}
+
+
 def disabled_seat(seat, *, disabled=None):
     if SEATS["seats"].get(seat, {}).get("disabled"):
         return {"config_disabled": True}
     reason = SEATS["seats"].get(seat, {}).get("disabled_by_user")
     if reason:
         return {"disabled_by_user": reason}
+    if seat in caller_skipped():
+        return {"disabled_by_caller": True}
     if disabled is None:
         with state_lock():
             disabled = load_json(STATE / "disabled.json", {})
@@ -826,6 +841,9 @@ def print_disabled(seat, entry):
         return
     if entry.get("disabled_by_user"):
         print(f"⛔ {seat} 已被用户停用：{entry['disabled_by_user']}；恢复需用户明确决定", file=sys.stderr)
+        return
+    if entry.get("disabled_by_caller"):
+        print(f"⛔ {seat} 已被派单方停用（AIW_SKIP_SEATS）；在派单方的本地配置里恢复", file=sys.stderr)
         return
     targets = entry.get("models", [seat])
     print(f"[{seat}] 已停用（疑似收费，since {entry.get('since', 'unknown')}）："
@@ -2379,7 +2397,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         return 64
     # 本机配置停用的点名座位不转发：执行端按它自己的配置判断，看不到这里的停用。
     disabled = disabled_seat(seat) if role is None else None
-    if disabled and (disabled.get("config_disabled") or disabled.get("disabled_by_user")):
+    if disabled and (disabled.get("config_disabled") or disabled.get("disabled_by_user") or disabled.get("disabled_by_caller")):
         print_disabled(seat, disabled)
         return 2
     flags = set(flags)
@@ -2428,6 +2446,11 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     env.pop('AIW_FORWARD_GROUP', None)
     if via != 'direct':
         env['AIW_FORWARD_GROUP'] = str(Path(os.environ['AIW_PANEL_DIR' if via == 'panel' else 'AIW_MAP_DIR']).resolve())
+    # 执行端按它自己的配置选座位：把本机（和上游派单方）停用的座位一起带过去，按角色派单也不会选到。
+    skipped = local_off_seats() | caller_skipped()
+    env.pop('AIW_SKIP_SEATS', None)
+    if skipped:
+        env['AIW_SKIP_SEATS'] = ','.join(sorted(skipped))
     env.pop('AIW_MAIN', None)
     if main_agent() is not None:
         env['AIW_MAIN'] = main_agent()

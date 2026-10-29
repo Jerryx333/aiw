@@ -236,4 +236,23 @@ def forward_skips_disabled_seat():
         check(r.returncode == 0 and (t / 'called').exists(), r)
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat)}
+def forward_carries_off_seats():
+    """按角色转发时把本机和上游停用的座位带给执行端（AIW_SKIP_SEATS），没有就不带。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        local = t / 'local.json'
+        call = cmd[:]; call[2] = 'review'
+        write_legacy_local(local, {'seats': {'qoder': {'disabled': True}, 'opencode': {'disabled_by_user': '自己在用'}}})
+        r = sh(call, env=dict(env, AIW_CONFIG=str(local), AIW_SKIP_SEATS='doubao,bad name'))
+        child = json.loads((t / 'called').read_text())['env']
+        check(r.returncode == 0 and child.get('AIW_SKIP_SEATS') == 'doubao,opencode,qoder', child.get('AIW_SKIP_SEATS'))
+        write_legacy_local(local, {'seats': {}})
+        r = sh(call, env=dict(env, AIW_CONFIG=str(local), AIW_SKIP_SEATS=''))
+        child = json.loads((t / 'called').read_text())['env']
+        check(r.returncode == 0 and 'AIW_SKIP_SEATS' not in child, child.get('AIW_SKIP_SEATS'))
+        # 上游停用的点名座位也不转发。
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local), AIW_SKIP_SEATS='qoder'))
+        check(r.returncode == 2 and '派单方停用' in r.stderr, r)
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats)}
