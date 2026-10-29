@@ -330,5 +330,42 @@ def slot_separate_pools():
         check(not list(f.root.glob("*.json")), "退出应释放名额")
 
 
+def slot_build_gate():
+    # shims/ 在 PATH 最前：构建排名额并限并行编译数，其余子命令原样放行。
+    with Fixture() as f:
+        fake = f.root / "bin"
+        fake.mkdir()
+        for name in ("swift", "xcodebuild"):
+            tool = fake / name
+            tool.write_text('#!/bin/sh\necho "held=${AIW_SLOT_HELD-} $*"\n')
+            tool.chmod(0o755)
+        path = f"{REPO / 'shims'}:{fake}:/usr/bin:/bin"
+
+        def call(*args, **overrides):
+            env = dict(f.env, PATH=path, AIW_BUILD_JOBS="3", **overrides)
+            return subprocess.run([str(REPO / "shims" / args[0]), *args[1:]], env=env,
+                                  capture_output=True, text=True, timeout=4)
+
+        for args, expected in (
+                (("swift", "build", "-c", "release"), "held=1 build --jobs 3 -c release"),
+                (("swift", "test", "--filter", "X"), "held=1 test --jobs 3 --filter X"),
+                (("swift", "build", "-j", "8"), "held=1 build -j 8"),
+                (("swift", "run", "App"), "held= run App"),
+                (("swift", "--version"), "held= --version"),
+                (("xcodebuild", "-scheme", "A", "build"), "held=1 -jobs 3 -scheme A build"),
+                (("xcodebuild", "-version"), "held= -version")):
+            result = call(*args)
+            check(result.returncode == 0 and result.stdout.strip() == expected,
+                  f"{args}: {result.stdout!r} {result.stderr!r}")
+        result = call("swift", "build", AIW_SLOT_HELD="1")
+        check(result.stdout.strip() == "held=1 build --jobs 3", "已持有名额不再排队，仍限并行")
+        result = call("swift", "build", AIW_BUILD_GATE="0")
+        check(result.stdout.strip() == "held= build", "AIW_BUILD_GATE=0 原样放行")
+        check(not list(f.root.glob("*.json")), "退出后应删除记录")
+        missing = subprocess.run([str(REPO / "shims" / "swift"), "build"], capture_output=True, text=True,
+                                 env=dict(f.env, PATH=f"{REPO / 'shims'}:/nonexistent"), timeout=4)
+        check(missing.returncode == 127, "找不到真命令时不能调回自己")
+
+
 CASES = {name: value for name, value in globals().copy().items()
          if name.startswith("slot_") and callable(value)}

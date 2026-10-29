@@ -319,6 +319,8 @@ aiw slot --status
 
 本机执行的写任务（非 `--ro`、非嵌套）另有一组派单名额：池名 `write`，与测试名额同目录、互不占用，`AIW_MAX_WRITES` 设上限（默认 4，非法值按 4 并提示）。占满时排队，排队和内存等待共用 1800 秒上限，到期照跑；持有派单名额不设置 `AIW_SLOT_HELD`，执行方自己跑的 `aiw slot` 仍要排测试名额。转发到别的主机执行的单不占本机派单名额，回本机跑验收时照常排测试名额。
 
+编译准入：`shims/` 里的 `swift`、`xcodebuild` 是同一个包装（`shims/gate.sh`）。把这个目录放在 PATH 最前，`swift build`、`swift test` 和 xcodebuild 构建就先排上面的测试名额（内存压力 ≥2 时等），没写 `-j`/`--jobs`/`-jobs` 时补上并行编译数（`AIW_BUILD_JOBS`，默认核数一半）；`swift run`、`xcodebuild -version`/`-list`/`-showBuildSettings` 等直接放行。已持有名额（`AIW_SLOT_HELD=1`）只限并行不排队，`AIW_BUILD_GATE=0` 原样放行。包装从 PATH 去掉自己的目录后再找真命令。用途是不靠调用方自觉：`~/.zshenv` 和 `~/.zprofile` 各引用一次 `shims/path.zsh`，有 `CLAUDECODE`（Claude Code）、`AIW_NESTED`（执行方）或 `CODEX_THREAD_ID`/`CODEX_SANDBOX`（Codex，待核实）时把目录挪到 PATH 最前，主人自己的终端不受影响；`.zprofile` 那次是因为登录 shell 的 path_helper 会把系统路径重新排到前面。只对之后新开的会话生效。
+
 `aiw sync` 先照旧对 aiw 执行 `git pull --ff-only`，失败时保留其退出码；成功后对已存在的 agent-use 和 agent-use-adapters Git 仓库分别快进更新，后两者失败只警告。目录覆盖变量与安装相同。
 
 核心入口缺失且无启用的 `agent_use` 座位时，`aiw doctor` 给出 `install.sh --with-agent-use` 建议，不影响退出码；已有启用座位时沿用缺失提示。
@@ -510,6 +512,7 @@ python3 tests/mutation_check.py credentials locked  # 只运行指定变异
 ## 变更记录
 
 - 2026-10-14 新增 `aiw slot` 全机测试名额、内存压力等待、默认 nice +10 和限线程，后台 QoS 可选；全量 harness 自动复用，定向用例隔离名额目录。
+- 2026-10-30 新增编译准入 `shims/`：agent 会话里的 swift/xcodebuild 构建默认排测试名额并限并行编译数。起因是多座位并行时各家在本机反复编译测试，加上常驻会话，内存超出物理内存、swap 用满，一次 `swift build` 从 20 秒拖到 13 分钟。
 - 2026-10-14 写单新增可重复的 `--verify` 与 `--verify-timeout`：执行方成功后由 aiw 在主会话环境验收，输出精简结果、归档全文并记账本；验收失败返回 4。
 - 2026-10-14 上下文交接默认门槛提前到 20 万，同档位增加由主会话判断新话题的条件提示；后台派单等完成通知，不轮询结果。
 - 2026-10-10 首次公开：公开默认只含 codex / codex-sol / claude；文本座位、路由覆盖、通知、findings 设置、跑腿均由本地配置提供。
