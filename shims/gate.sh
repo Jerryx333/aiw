@@ -39,7 +39,7 @@ for arg in "$@"; do
   case "$arg" in -j|-j[0-9]*|--jobs|--jobs=*|-jobs) explicit=1 ;; esac
 done
 if [ "$explicit" = 0 ]; then
-  jobs="${AIW_BUILD_JOBS:-$(( $(sysctl -n hw.ncpu 2>/dev/null || echo 2) / 2 ))}"
+  jobs="${AIW_BUILD_JOBS:-$(( $(sysctl -n hw.ncpu 2>/dev/null || echo 8) / 2 ))}"
   [ "$jobs" -ge 1 ] 2>/dev/null || jobs=1
   if [ "$name" = swift ]; then args=("$1" "$jobs_flag" "$jobs" "${@:2}"); else args=("$jobs_flag" "$jobs" "$@"); fi
 fi
