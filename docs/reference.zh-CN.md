@@ -315,7 +315,9 @@ aiw slot --status
 
 启动子命令时，仅为未设置的 `OMP_NUM_THREADS`、`OPENBLAS_NUM_THREADS`、`MKL_NUM_THREADS`、`VECLIB_MAXIMUM_THREADS`、`NUMEXPR_NUM_THREADS`、`POLARS_MAX_THREADS`、`RAYON_NUM_THREADS` 设置 `AIW_SLOT_THREADS` 的值（默认 `1`），已有设置（包括空值）不覆盖。`AIW_SLOT_THREADS=0` 表示不设置任何线程变量；非法值（非非负整数）返回 64。
 
-`tests/test_harness.py` 不带用例名（包括 `-j 1`）时直接复用 slot 的名额与等待逻辑，并为自身应用相同的 QoS 选择（默认 nice +10）及线程变量设置；定向用例不排队。slot 与全量 harness 都设置 `AIW_SLOT_HELD=1`，子进程继承后跳过重复抢名额。harness 在每个用例临时目录设置独立 `AIW_SLOT_DIR`，避免影响真实名额。派单的 `--verify` 也用 `aiw slot -- <命令>` 包装。`--verify` 已通过的命令，主会话不再重跑。
+`tests/test_harness.py` 不带用例名（包括 `-j 1`）时直接复用 slot 的名额与等待逻辑，并为自身应用相同的 QoS 选择（默认 nice +10）及线程变量设置；定向用例不排队。slot 与全量 harness 都设置 `AIW_SLOT_HELD=1`，子进程继承后跳过重复抢名额。harness 在每个用例临时目录设置独立 `AIW_SLOT_DIR`，避免影响真实名额。派单的 `--verify` 由 aiw 自动排测试名额（整组验收占一个名额，排队时间不计入 `--verify-timeout`，验收命令继承 `AIW_SLOT_HELD=1`），不用再手动包 `aiw slot --`。`--verify` 已通过的命令，主会话不再重跑。
+
+本机执行的写任务（非 `--ro`、非嵌套）另有一组派单名额：池名 `write`，与测试名额同目录、互不占用，`AIW_MAX_WRITES` 设上限（默认 4，非法值按 4 并提示）。占满时排队，排队和内存等待共用 1800 秒上限，到期照跑；持有派单名额不设置 `AIW_SLOT_HELD`，执行方自己跑的 `aiw slot` 仍要排测试名额。转发到别的主机执行的单不占本机派单名额，回本机跑验收时照常排测试名额。
 
 `aiw sync` 先照旧对 aiw 执行 `git pull --ff-only`，失败时保留其退出码；成功后对已存在的 agent-use 和 agent-use-adapters Git 仓库分别快进更新，后两者失败只警告。目录覆盖变量与安装相同。
 

@@ -997,7 +997,7 @@ def codex_dispatch_reminders():
             reminder = worker.dispatch_reminders('codex', False, str(work), verify=verify)
             check((verified_notice in reminder) == bool(verify), reminder)
             check(('需主会话补跑' in reminder) == (not verify), reminder)
-        r, row, _ = run(flags=('--no-fallback', '--verify', 'true'))
+        r, row, _ = run(flags=('--no-fallback', '--verify', 'test "$AIW_SLOT_HELD" = 1'))
         check(r.returncode == 0, r.stderr)
         task = (Path(row['run_dir']) / 'task.txt').read_text()
         check(verified_notice in task and '需主会话补跑' not in task, task)

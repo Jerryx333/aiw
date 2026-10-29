@@ -315,5 +315,20 @@ def slot_signal_forwarding():
                     process.communicate(timeout=1)
 
 
+def slot_separate_pools():
+    import slot
+    with Fixture() as f, patch.dict(os.environ, f.env, clear=True), redirect_stderr(io.StringIO()) as err:
+        with f.lock():
+            with slot.reservation(["aiw", "codex"], slots=1, max_wait=0, pool="write"):
+                check("排队中" not in err.getvalue(), "写任务名额不应被测试名额占住")
+                check("AIW_SLOT_HELD" not in os.environ, "写任务名额不应标记测试名额")
+                check([p.name for p in f.root.glob("*.json")] == ["write-0.json"], "写任务记录应单独成池")
+                with slot.reservation(["aiw", "codex"], slots=1, max_wait=0, pool="write"):
+                    check("名额已满（1 个）" in err.getvalue(), err.getvalue())
+                with slot.reservation(["true"], slots=2, max_wait=0):
+                    check(os.environ.get("AIW_SLOT_HELD") == "1", "测试名额应标记")
+        check(not list(f.root.glob("*.json")), "退出应释放名额")
+
+
 CASES = {name: value for name, value in globals().copy().items()
          if name.startswith("slot_") and callable(value)}

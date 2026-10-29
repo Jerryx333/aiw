@@ -73,9 +73,9 @@ def open_lock(path):
     return lock
 
 
-def holders(directory):
+def holders(directory, pool="slot"):
     result = []
-    for path in sorted(directory.glob("slot-*.json")):
+    for path in sorted(directory.glob(f"{pool}-*.json")):
         with open_lock(path.with_suffix(".lock")) as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -115,8 +115,11 @@ def summary(name, data):
 
 
 @contextmanager
-def reservation(command, slots=None, max_wait=900, label=""):
-    if os.environ.get("AIW_SLOT_HELD") == "1":
+def reservation(command, slots=None, max_wait=900, label="", pool="slot"):
+    # pool="slot" 是测试名额，持有期间标记 AIW_SLOT_HELD；其他池（如派单名额）不标记，
+    # 执行方自己跑的 aiw slot 仍要排测试名额。
+    marks = pool == "slot"
+    if marks and os.environ.get("AIW_SLOT_HELD") == "1":
         yield
         return
     slots = positive(os.environ.get("AIW_TEST_SLOTS", "2")) if slots is None else positive(slots)
@@ -128,14 +131,14 @@ def reservation(command, slots=None, max_wait=900, label=""):
     try:
         while lock is None:
             for index in range(slots):
-                candidate = open_lock(directory / f"slot-{index}.lock")
+                candidate = open_lock(directory / f"{pool}-{index}.lock")
                 try:
                     fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
                     candidate.close()
                     continue
                 lock = candidate
-                record = directory / f"slot-{index}.json"
+                record = directory / f"{pool}-{index}.json"
                 data = dict(pid=os.getpid(), label=label, command=shlex.join(command)[:120],
                             cwd=os.getcwd(), started=dt.datetime.now().astimezone().isoformat())
                 try:
@@ -148,7 +151,7 @@ def reservation(command, slots=None, max_wait=900, label=""):
                 break
             if not queued:
                 warn(f"名额已满（{slots} 个），排队中…")
-                for name, data in holders(directory):
+                for name, data in holders(directory, pool):
                     warn(summary(name, data))
                 queued = True
             remaining = deadline - time.monotonic()
@@ -166,12 +169,13 @@ def reservation(command, slots=None, max_wait=900, label=""):
                 warn("内存等待已超过等待上限，直接运行")
                 break
             time.sleep(min(15, remaining))
-        os.environ["AIW_SLOT_HELD"] = "1"
+        if marks:
+            os.environ["AIW_SLOT_HELD"] = "1"
         yield
     finally:
-        if saved_held is None:
+        if marks and saved_held is None:
             os.environ.pop("AIW_SLOT_HELD", None)
-        else:
+        elif marks:
             os.environ["AIW_SLOT_HELD"] = saved_held
         if record is not None:
             remove_record(record)

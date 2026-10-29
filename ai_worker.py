@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import findings
 from gitenv import repository_git_env
+import slot
 
 import contextlib
 import datetime as dt
@@ -1313,6 +1314,20 @@ def lower_verify_priority(target=10):
 
 
 def run_verification(commands, workdir, timeout, run_dir):
+    # 验收常是构建、全量测试：和 aiw slot 共用全机测试名额，排队时间不算进验收超时。
+    with contextlib.ExitStack() as stack:
+        try:
+            with interruptible_signals():
+                stack.enter_context(slot.reservation(["aiw-verify", *commands], label=f"aiw 验收 {workdir}"))
+        except RunInterrupted as e:
+            e.result["verify"] = {"total": len(commands), "passed": 0, "secs": 0, "interrupted": True}
+            raise
+        except OSError as e:
+            print(f"[ai-worker] 警告：拿测试名额失败，直接验收：{e}", file=sys.stderr)
+        return _run_verification(commands, workdir, timeout, run_dir)
+
+
+def _run_verification(commands, workdir, timeout, run_dir):
     results, full = [], []
     interruption = None
     started = time.monotonic()
@@ -2539,6 +2554,20 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     return rc
 
 
+def reserve_write_slot(stack, seat, workdir):
+    # 写任务的执行方会在本机构建、跑测试；全机同时跑的写任务有上限，满了排队，最多等 30 分钟后照跑。
+    try:
+        slots = slot.positive(os.environ.get("AIW_MAX_WRITES", "4"))
+    except ValueError:
+        print("[ai-worker] AIW_MAX_WRITES 必须是正整数，按 4 处理", file=sys.stderr)
+        slots = 4
+    try:
+        stack.enter_context(slot.reservation(["aiw", seat, workdir], slots=slots, max_wait=1800,
+                                             label=f"aiw 写任务 {seat}", pool="write"))
+    except OSError as e:
+        print(f"[ai-worker] 警告：拿写任务名额失败，直接派单：{e}", file=sys.stderr)
+
+
 def dispatch(inflight: Path | None, attempt: dict, *, before_execute=None) -> int:
     with contextlib.ExitStack() as stack:
         try:
@@ -2732,6 +2761,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         if not ro and text_only_seat(seat):
             print(f"[{seat}] 这个座位只生成文本、不能改文件。要它出结论请加 --ro；要改文件请用 `aiw write`。", file=sys.stderr)
             return 64
+        if not ro and os.environ.get("AIW_NESTED") != "1":
+            reserve_write_slot(stack, seat, workdir)
         provider_file = Path(os.environ["AIW_PROVIDER_FILE"]) if os.environ.get("AIW_PROVIDER_FILE") else None
         if provider_file is not None:
             try:

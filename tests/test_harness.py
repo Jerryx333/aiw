@@ -96,6 +96,7 @@ def run_named(names, durations):
                     root = Path(isolated)
                     os.environ.update(HOME=str(root), AIW_STATE=str(root / "state"),
                                       AIW_SLOT_DIR=str(root / "slots"),
+                                      AIW_SLOT_PRESSURE_CMD="/usr/bin/true",
                                       PATH=f"{fake_bins(root)}:{os.environ['PATH']}",
                                       AGENT_USE_HOME=str(fake_agent_use(root)))
                     local = root / "test-seats.json"
