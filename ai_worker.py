@@ -2627,7 +2627,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     if invalid:
         print(f"[ai-worker] 顶替链配置错误：跑腿供应商 {sorted(invalid)} 只能用 aiw errand", file=sys.stderr)
         return 64
-    if '--worktree' not in flags:
+    # local_only 座位依赖本机独有的服务（如账号池），不转发给执行机。
+    if '--worktree' not in flags and not SEATS['seats'].get(seat, {}).get('local_only'):
         try:
             command = forward_command(SEATS)
         except ConfigError as exc:

@@ -255,4 +255,20 @@ def forward_carries_off_seats():
         check(r.returncode == 2 and '派单方停用' in r.stderr, r)
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats)}
+def forward_skips_local_only_seat():
+    """local_only 座位依赖本机服务，留在本机跑；去掉开关照旧转发，非布尔值配置报错。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        local = t / 'local.json'
+        write_legacy_local(local, {'seats': {'qoder': {'local_only': True}}})
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
+        write_legacy_local(local, {'seats': {'qoder': {'local_only': False}}})
+        r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and (t / 'called').exists(), r)
+        from seats_config import load_public, validate
+        config = load_public(REPO); config['seats']['codex']['local_only'] = 'yes'
+        check(any('local_only' in error for error in validate(config)), 'local_only 非布尔值未报错')
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat)}

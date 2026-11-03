@@ -151,7 +151,8 @@ def validate(merged) -> list[str]:
         elif 'model_args' in seat:
             strings(seat['model_args'], f'{path}.model_args')
         # free_only 是展示/不换付费模型的声明；free_guard 才是执行时的收费检测保护。
-        for key in ('disabled', 'ro_only', 'free_only', 'free_guard', 'require_no_tools', 'expects_credits', 'workspace'):
+        for key in ('disabled', 'ro_only', 'free_only', 'free_guard', 'require_no_tools', 'expects_credits', 'workspace',
+                    'local_only'):
             if key in seat and type(seat[key]) is not bool:
                 error(f'{path}.{key}', '布尔值')
         if seat.get('workspace') is True and seat.get('require_no_tools') is True:
