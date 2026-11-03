@@ -324,13 +324,13 @@ def write_worktree_clone_ignored():
         return
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
-        work = git_template(t / 'repo', {'.gitignore': 'node_modules/\n.venv/\nbuild/\n',
+        work = git_template(t / 'repo', {'.gitignore': 'node_modules/\n.env\nbuild/\nwt/\nlink\n',
                                          'apps/web/tracked': 'web\n', 'apps/other/tracked': 'other\n'})
-        for name in ('node_modules/pkg/index.js', 'apps/web/node_modules/a/index.js',
-                     '.venv/bin/py', 'build/out'):
+        for name in ('node_modules/pkg/index.js', 'apps/web/node_modules/a/index.js', '.env', 'build/out'):
             (work / name).parent.mkdir(parents=True, exist_ok=True); (work / name).write_text('dep\n')
-        (work / 'apps/other/node_modules').symlink_to('../../node_modules', target_is_directory=True)
-        check(sh(['git', 'config', '--add', 'aiw.worktreeClone', '.venv'], cwd=work).returncode == 0, 'git config')
+        (work / 'link').symlink_to('node_modules', target_is_directory=True)
+        check(sh(['git', 'worktree', 'add', '-q', '-b', 'nested', str(work / 'wt/nested')], cwd=work).returncode == 0,
+              'nested worktree')
         state = t / 'state'; state.mkdir()
         script = '''import sys
 from pathlib import Path
@@ -338,20 +338,21 @@ import ai_worker as w
 src = Path(sys.argv[1])
 mapped, fields, root, head = w.create_task_worktree(str(src), w.STATE / 'runs/direct')
 wt = Path(fields['worktree'])
-for name in ('node_modules/pkg/index.js', 'apps/web/node_modules/a/index.js', '.venv/bin/py'):
+for name in ('node_modules/pkg/index.js', 'apps/web/node_modules/a/index.js', '.env', 'build/out'):
     assert (wt / name).read_text() == 'dep\\n', name
-assert not (wt / 'build').exists(), 'build 不在名单里却被克隆'
-assert not (wt / 'apps/other/node_modules').exists(), '软链被克隆'
+assert (wt / 'link').is_symlink(), '软链没按软链复制'
+assert not (wt / 'wt').exists(), '含 worktree 的目录被复制'
 (wt / 'node_modules/pkg/index.js').write_text('changed\\n')
 assert (src / 'node_modules/pkg/index.js').read_text() == 'dep\\n', '源目录被改'
-assert w.worktree_status(wt) == b'', '克隆目录被算作改动'
+assert w.worktree_status(wt) == b'', '复制的文件被算作改动'
 w.report_task_worktree(fields, root, head)
 assert not wt.exists(), '无改动的 worktree 没清理'
 '''
         r = inprocess_sh([sys.executable, '-c', script, str(work)],
                          env=dict(os.environ, AIW_STATE=str(state)), cwd=REPO)
         check(r.returncode == 0, r.stderr)
-        for expected in ('已克隆依赖目录', '.venv', 'apps/web/node_modules', '本单无改动，worktree 已清理'):
+        for expected in ('已写时复制不进 git 的文件', '.env', 'apps/web/node_modules', '含 worktree，未复制：wt',
+                         '本单无改动，worktree 已清理'):
             check(expected in r.stderr, expected + ': ' + r.stderr)
 
 
