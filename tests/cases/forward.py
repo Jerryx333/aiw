@@ -263,6 +263,11 @@ def forward_skips_local_only_seat():
         write_legacy_local(local, {'seats': {'qoder': {'local_only': True}}})
         r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
         check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
+        # 按角色派单时本机顺序首选的座位是 local_only，也留在本机。
+        write_legacy_local(local, {'seats': {'qoder': {'local_only': True}}, 'roles': {'claude': {'draft': ['qoder']}}})
+        call = cmd[:]; call[2] = 'draft'
+        r = sh(call, env=dict(env, AIW_CONFIG=str(local)))
+        check(r.returncode == 0 and not (t / 'called').exists() and 'qoder ok' in r.stdout, r)
         write_legacy_local(local, {'seats': {'qoder': {'local_only': False}}})
         r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
         check(r.returncode == 0 and (t / 'called').exists(), r)

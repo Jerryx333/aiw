@@ -211,6 +211,19 @@ def resolve_role(role, *, readonly=True):
                     + '；单家安装可接入 agent-use 文本座位')
 
 
+def runs_local_only(seat) -> bool:
+    """点名或按角色选中的座位带 local_only 时留在本机；角色按本机顺序取第一个可用座位，不打印跳过原因。"""
+    if seat in ('write', 'review', 'draft'):
+        try:
+            candidates = role_candidates(seat)
+        except RoleError:
+            return False
+        snapshot = selection_snapshot()
+        seat = next((s for s in candidates
+                     if not (role_candidate_reason(seat, s) or seat_unavailable(s, snapshot=snapshot))), None)
+    return bool(seat and SEATS['seats'].get(seat, {}).get('local_only'))
+
+
 def child_env() -> dict:
     # 外包出去的 claude -p / codex exec 也会触发各自的派单钩子；标记嵌套，钩子见到就不再派单（防套娃）
     return dict(os.environ, AIW_NESTED="1")
@@ -2665,7 +2678,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         print(f"[ai-worker] 顶替链配置错误：跑腿供应商 {sorted(invalid)} 只能用 aiw errand", file=sys.stderr)
         return 64
     # local_only 座位依赖本机独有的服务（如账号池），不转发给执行机。
-    if '--worktree' not in flags and not SEATS['seats'].get(seat, {}).get('local_only'):
+    if '--worktree' not in flags and not runs_local_only(seat):
         try:
             command = forward_command(SEATS)
         except ConfigError as exc:
