@@ -6,7 +6,7 @@
 
 用法：
     aiw <seat> <workdir> <timeout_s> <prompt_file> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
-        --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
+        --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；macOS 上写时复制带上被忽略的 node_modules（git config aiw.worktreeClone 可加目录名）；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
         --text 隐含 --ro；workspace 座位禁用工具；draft 自动启用。
         --attach 可重复，路径相对 workdir；CLI 座位收校验后的文件清单，其它座位收内联全文。
         拒绝 .env/密钥/证书类文件、二进制文件、workdir 之外的文件；附件合计上限 200KB。
@@ -26,6 +26,7 @@ from gitenv import repository_git_env
 import slot
 
 import contextlib
+import ctypes
 import datetime as dt
 import fcntl
 import hashlib
@@ -1436,7 +1437,43 @@ def create_task_worktree(workdir: str, run_dir: Path):
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         atomic_write_bytes(path.parent / (path.name + ".json"), json.dumps(metadata, ensure_ascii=False).encode())
         worktree_git(root, "worktree", "add", "-b", branch, str(path), head)
+        clone_ignored_dirs(root, path)
     return str(path / relative), {"worktree": str(path), "worktree_branch": branch}, root, head
+
+
+def clone_ignored_dirs(root: Path, path: Path):
+    """Best effort: give the new worktree copy-on-write clones of ignored dependency dirs."""
+    if sys.platform != "darwin":
+        return
+    try:
+        names = {"node_modules"}
+        extra = subprocess.run(["git", "config", "--get-all", "aiw.worktreeClone"], cwd=root,
+                               env=repository_git_env(), capture_output=True, timeout=20)
+        names.update(n for n in os.fsdecode(extra.stdout).split() if "/" not in n and n not in (".", ".."))
+        listed = worktree_git(root, "ls-files", "--others", "--ignored", "--exclude-standard",
+                              "--directory", "-z").stdout.split(b"\0")
+        libc = ctypes.CDLL(None, use_errno=True)
+    except (OSError, subprocess.SubprocessError) as e:
+        print(f"[ai-worker] 依赖目录未克隆：{e}", file=sys.stderr)
+        return
+    cloned = []
+    for entry in listed:
+        relative = os.fsdecode(entry).removesuffix("/")
+        source, target = root / relative, path / relative
+        if (not entry.endswith(b"/") or Path(relative).name not in names
+                or source.is_symlink() or not source.is_dir() or os.path.lexists(target)):
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            continue
+        # clonefile(2) clones a whole directory tree in one call; CLONE_NOFOLLOW = 1.
+        if libc.clonefile(os.fsencode(source), os.fsencode(target), 1) != 0:
+            print(f"[ai-worker] 依赖目录未克隆：{relative}：{os.strerror(ctypes.get_errno())}", file=sys.stderr)
+            break
+        cloned.append(relative)
+    if cloned:
+        print(f"[ai-worker] 已克隆依赖目录（写时复制，不占额外空间）：{'、'.join(cloned)}", file=sys.stderr)
 
 
 def report_task_worktree(fields, root, head):

@@ -364,7 +364,7 @@ Claude 派单钩子检查也识别已启用的 `aiw@…` 插件提供的 `UserPr
 worker 只接受 `--ro --text --worktree --net --no-fallback --no-findings --allow-nested --attach --effort --verify --verify-timeout`，panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
 
 `aiw write . 1200 task.txt --worktree`（点名写座位也可用）：只用于写任务，与 `--ro`、review/draft 或只读座位同用返回 64；workdir 必须在有 HEAD 提交的 Git 仓库内。
-从当前 HEAD 创建 `aiw/<run-id>` 分支及 `<STATE>/worktrees/<run-id>`（同名分支返回 64，不覆盖）；子目录映射到同一相对路径，写锁、顶替链、提示词、沙箱与改动统计均使用新目录。未提交改动不会带入，stderr 最多列 10 个文件。带 `--attach` 时先在原 workdir 按全部附件规则预检；附件未跟踪、已修改或已暂存（相对 HEAD 有任何差异）返回 64，提示先提交或去掉 `--worktree`，不创建 worktree、分支或元数据；通过后在 worktree 读取对应已提交文件。
+从当前 HEAD 创建 `aiw/<run-id>` 分支及 `<STATE>/worktrees/<run-id>`（同名分支返回 64，不覆盖）；子目录映射到同一相对路径，写锁、顶替链、提示词、沙箱与改动统计均使用新目录。未提交改动不会带入，stderr 最多列 10 个文件。macOS 上建好后把源仓库里被忽略的 `node_modules` 目录（任意层级，软链不算）用 clonefile 写时复制到 worktree 同一位置，不用重装依赖、不占额外空间、改动不影响源目录；其他目录名用 `git -C <仓库> config --add aiw.worktreeClone <目录名>` 加（只认目录名，不认路径）。克隆失败（如跨盘）只提示，不影响派单。带 `--attach` 时先在原 workdir 按全部附件规则预检；附件未跟踪、已修改或已暂存（相对 HEAD 有任何差异）返回 64，提示先提交或去掉 `--worktree`，不创建 worktree、分支或元数据；通过后在 worktree 读取对应已提交文件。
 成功、失败、超时都在 stderr 报告路径、分支、相对初始 HEAD 的 `git diff --stat` 及未暂存/未跟踪文件数；账本增加 `worktree`、`worktree_branch`，普通单不增加。
 创建时原子写入 `<STATE>/worktrees/<run-id>.json`（路径、分支、源仓库、初始 HEAD、UTC 创建时间）。本单无已跟踪/暂存/未跟踪改动且分支未前进时即时清理；有改动则保留，不自动 commit/merge。检查并提交后可用 `git -C <原仓库> merge --ff-only aiw/<run-id>`，不可快进时用 diff/cherry-pick；每个 `--worktree` 单报告后及 `aiw gc` 扫描：跳过持写锁目录，已合并且干净的删除，超过固定 7 天的先保存相对初始 HEAD 的二进制补丁到 `<STATE>/worktrees/archive/<run-id>.patch` 再删除（失败保留）；在初始 HEAD 上用 `git apply --binary <补丁>` 恢复。被忽略文件不计入干净判断、不存档到补丁，清理使用强制删除以一并移除它们。源仓库丢失时残留目录整体保存到同目录的 `<run-id>.files/`。
 
