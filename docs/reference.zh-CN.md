@@ -295,6 +295,9 @@ aiw panel <workdir> <timeout_s> <prompt_file> [seat ...] [--attach 文件 ...] [
 aiw map <workdir> <timeout_s> <prompt_file> <文件 ...> [--seat 座位] [--jobs N]  # 默认 map_default=draft，并发 3，summary.json 汇总
 aiw panel <workdir> <timeout_s> <prompt_file> --prior prior.md  # 先写自己的判断，仅归档供主会话看，不发给座位
 aiw panel --free <workdir> <timeout_s> <prompt_file>  # 只问免费座位，不能同时指定 seat
+aiw review <workdir> 900 - <<'EOF'  # prompt_file 写 - 从标准输入读，免建临时文件；panel、map 同样支持；转发时存进本单 run 目录
+评审本次改动……
+EOF
 aiw doctor | route "消息" | goal init|next|verify|status <file> | weekly [天] [--json] | snapshot | sync
 aiw goal verify <file> [id] [--force] [--accept-verify-change] [--full]
 aiw route --check

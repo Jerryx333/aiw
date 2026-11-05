@@ -16,7 +16,8 @@ inflight = state / 'inflight' / (str(os.getppid()) + '.json')
 snapshot = {'argv': sys.argv[1:], 'env': dict(os.environ),
             'prompt': Path(sys.argv[5] if sys.argv[1] == 'fixed-arg' else sys.argv[4]).read_text(),
             'inflight': json.loads(inflight.read_text()),
-            'stale_provider': bool(os.environ.get('AIW_PROVIDER_FILE') and Path(os.environ['AIW_PROVIDER_FILE']).exists())}
+            'stale_provider': bool(os.environ.get('AIW_PROVIDER_FILE') and Path(os.environ['AIW_PROVIDER_FILE']).exists()),
+            'stdin_null': os.path.samestat(os.fstat(0), os.stat(os.devnull))}
 (run / 'snapshot.json').write_text(json.dumps(snapshot))
 (run / 'output.md').write_text('forward output')
 (run / 'forward.json').write_text(os.environ.get('FORWARD_META', '{"actual":"remote-seat","host":"remote"}'))
@@ -276,4 +277,18 @@ def forward_skips_local_only_seat():
         check(any('local_only' in error for error in validate(config)), 'local_only 非布尔值未报错')
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat)}
+
+def forward_stdin_prompt():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        call = cmd[:]; call[5] = '-'
+        r = sh(call, env=env, input='FORWARD_STDIN_MARKER')
+        check(r.returncode == 0 and 'forward stdout' in r.stderr + r.stdout, r)
+        data = json.loads((t / 'called').read_text()); run = Path(data['env']['AIW_FORWARD_RUN_DIR'])
+        check(data['argv'][4] == str(run / 'forward-prompt.md'), data['argv'])
+        snapshot = json.loads((run / 'snapshot.json').read_text())
+        check(snapshot['prompt'] == 'FORWARD_STDIN_MARKER', snapshot['prompt'])
+        check(snapshot['stdin_null'], '转发命令拿到了调用方的标准输入')
+        check('FORWARD_STDIN_MARKER' in (run / 'task.txt').read_text(), 'task.txt 缺 prompt')
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt)}

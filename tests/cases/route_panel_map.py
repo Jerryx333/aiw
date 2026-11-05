@@ -896,7 +896,28 @@ def panel_map_forward():
 
 
 
+
+def panel_map_stdin_prompt():
+    from support import sh as real_sh  # 要真子进程的标准输入
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); wd = t / 'work'; wd.mkdir(); (wd / 'a.txt').write_text('item')
+        env = dict(os.environ, AIW_STATE=str(t / 'state'), AGENT_USE_HOME=str(fake_agent_use(t)))
+        aiw = ['bash', str(REPO / 'bin/aiw')]
+        r = real_sh(aiw + ['panel', str(wd), '10', '-', 'qoder', 'workbuddy', '--prior', str(wd / 'a.txt')], env=env, input='PANEL_STDIN_MARKER')
+        check(r.returncode == 0, r.stdout + r.stderr)
+        d = next((t / 'state/panels').iterdir())
+        check((d / 'prompt.md').read_text() == 'PANEL_STDIN_MARKER', (d / 'prompt.md').read_text())
+        r = real_sh(aiw + ['panel', str(wd), '10', '-', 'qoder', 'workbuddy'], env=env, input='')
+        check(r.returncode == 64 and '标准输入的 prompt 是空的' in r.stderr, r.stderr)
+        r = real_sh(aiw + ['map', str(wd), '10', '-', 'a.txt'], env=env, input='MAP_STDIN_MARKER')
+        check(r.returncode == 0, r.stdout + r.stderr)
+        m = next((t / 'state/maps').iterdir())
+        check((m / 'prompt.md').read_text() == 'MAP_STDIN_MARKER', (m / 'prompt.md').read_text())
+        r = real_sh(aiw + ['map', str(wd), '10', '-', 'a.txt'], env=env, input=' ')
+        check(r.returncode == 64 and '标准输入的 prompt 是空的' in r.stderr, r.stderr)
+
 CASES = {case.__name__: case for case in (
+    panel_map_stdin_prompt,
     panel_map_forward,
     route_textwork,
     route_override,

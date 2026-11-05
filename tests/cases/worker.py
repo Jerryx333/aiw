@@ -1250,6 +1250,24 @@ def agent_use_cwd():
 
 
 
+
+def stdin_prompt():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        cmd, env, _ = worker_call(t, AGENT_USE_HOME=str(fake_agent_use(t)), AIW_STATE=str(t / 'state'))
+        cmd[5] = '-'
+        (t / '-').write_text('FILE_NAMED_DASH')  # 当前目录有同名文件也必须读标准输入
+        r = sh(cmd, env=env, cwd=t, input='STDIN_PROMPT_MARKER 中文')
+        check(r.returncode == 0 and 'qoder ok' in r.stdout, r.stdout + r.stderr)
+        tasks = [p.read_text() for p in (t / 'state/runs').glob('*/task.txt')]
+        check(len(tasks) == 1 and 'STDIN_PROMPT_MARKER 中文' in tasks[0] and 'FILE_NAMED_DASH' not in tasks[0], str(tasks))
+        for empty in ('', ' \n'):
+            r = sh(cmd, env=env, input=empty)
+            check(r.returncode == 64 and '标准输入的 prompt 是空的' in r.stderr, r.stderr)
+        r = subprocess.run(cmd, env=env, input=b'\xff\xfe bad', capture_output=True, timeout=120)
+        check(r.returncode == 64 and '读不了标准输入的 prompt' in r.stderr.decode(), r.stderr.decode())
+
+
 def nested_dispatch():
     with tempfile.TemporaryDirectory() as td:
         cmd, env, _ = worker_call(Path(td), AIW_NESTED='1')
@@ -1704,6 +1722,7 @@ def write_slot_dispatch():
 
 
 CASES = {case.__name__: case for case in (
+    stdin_prompt,
     write_slot_dispatch,
     worker_stdout_newline,
     run_dir_persist,

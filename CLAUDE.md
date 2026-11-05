@@ -10,7 +10,7 @@
 | review | 只读评审、整仓分析、找代码 | `aiw review <workdir> 900 <prompt文件>` |
 | draft | 起草、改写、摘要、长材料提炼的兜底 | `aiw draft <workdir> 600 <prompt文件> --attach 文件` |
 
-座位映射见 `aiw doctor`。review/draft 强制只读。
+座位映射见 `aiw doctor`。review/draft 强制只读。`<prompt文件>` 写 `-` 时从标准输入读（如 `aiw review . 900 - <<'EOF'`），不用为派单另建临时文件。
 
 ## 怎么派单
 

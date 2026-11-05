@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """逐文件派同一份文本任务（只读，保留正常顶替链）。
 
-    aiw map <workdir> <timeout_s> <prompt_file> <文件 ...> [--seat 座位] [--jobs N]
+    aiw map <workdir> <timeout_s> <prompt_file|-> <文件 ...> [--seat 座位] [--jobs N]
 
-默认座位由 map_default 配置、并发 3；1–50 个附件逐个校验，通过后才派单。
+prompt_file 写 - 时从标准输入读 prompt。默认座位由 map_default 配置、并发 3；1–50 个附件逐个校验，通过后才派单。
 结果在 state/maps/<时间>-<pid>/，summary.json 按输入顺序汇总。
 返回码：0 全部成功；1 任一单失败；64 用法或附件错误；130/143 信号中断。
 """
@@ -24,7 +24,7 @@ from pathlib import Path
 
 from harness_ids import format_panel_id
 
-from ai_worker import AttachError, SEATS, build_attachments, dispatch, resolve_role, RoleError
+from ai_worker import AttachError, SEATS, read_stdin_prompt, build_attachments, dispatch, resolve_role, RoleError
 from seats_config import ROLE_NAMES, ConfigError, forward_command
 
 HERE = Path(__file__).resolve().parent
@@ -79,7 +79,7 @@ def ask(item: tuple[int, str], seat: str, workdir: str, timeout: str,
     with workers.lock:
         if workers.stop_code:
             return {"file": file, "rc": workers.stop_code, "provider": None, "chars": 0}
-        p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+        p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
         workers.active.add(p)
     try:
         stdout, stderr = p.communicate(timeout=limit)
@@ -126,7 +126,7 @@ def main() -> int:
                     seat = value
                 else:
                     jobs = value
-            elif arg.startswith("-"):
+            elif arg.startswith("-") and arg != "-":
                 raise ValueError(f"未知开关：{arg}")
             else:
                 args.append(arg)
@@ -160,7 +160,7 @@ def main() -> int:
         workdir = str(Path(workdir).resolve())
         for file in files:
             build_attachments(workdir, [file])
-        prompt = Path(prompt_file).read_text(encoding="utf-8")
+        prompt = read_stdin_prompt() if prompt_file == "-" else Path(prompt_file).read_text(encoding="utf-8")
         grace = float(os.environ.get("AIW_MAP_GRACE", "90"))
         if not math.isfinite(grace) or grace < 0:
             raise ValueError("AIW_MAP_GRACE 必须是非负有限秒数")

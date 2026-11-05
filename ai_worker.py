@@ -5,8 +5,9 @@
     kind=cli        直接调用命令行（codex），可以写文件。
 
 用法：
-    aiw <seat> <workdir> <timeout_s> <prompt_file> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
+    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
         --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；macOS 上写时复制带上全部被忽略的文件（.env、node_modules 等）；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
+        prompt_file 写 - 时从标准输入读 prompt，不用先建临时文件。
         --text 隐含 --ro；workspace 座位禁用工具；draft 自动启用。
         --attach 可重复，路径相对 workdir；CLI 座位收校验后的文件清单，其它座位收内联全文。
         拒绝 .env/密钥/证书类文件、二进制文件、workdir 之外的文件；附件合计上限 200KB。
@@ -2464,8 +2465,19 @@ def record_findings(workdir, seat, actual, via, ro, prompt_id, run_dir, parsed, 
         return False
 
 
+def read_stdin_prompt():
+    """prompt_file 写 - 时调用：按 UTF-8 严格解码标准输入，空白视为错误。"""
+    try:
+        text = sys.stdin.buffer.read().decode("utf-8")
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(f"读不了标准输入的 prompt：{e}") from e
+    if not text.strip():
+        raise ValueError("标准输入的 prompt 是空的")
+    return text
+
+
 def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
-                     inflight=None, *, before_execute=None):
+                     inflight=None, *, before_execute=None, prompt=None):
     role = seat if seat in ('write', 'review', 'draft') else None
     if role is None and main_exclude_reason(seat):
         print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
@@ -2491,8 +2503,9 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         if not Path(workdir).is_dir():
             raise AttachError(f'工作目录不存在：{workdir}')
         workdir = str(Path(workdir).resolve())
-        prompt_file = str(Path(prompt_file).resolve())
-        prompt = Path(prompt_file).read_text(encoding='utf-8')
+        if prompt is None:
+            prompt_file = str(Path(prompt_file).resolve())
+            prompt = Path(prompt_file).read_text(encoding='utf-8')
         files = read_attachments(workdir, attach)
     except (AttachError, OSError, UnicodeError) as exc:
         print(f'[ai-worker] {exc}', file=sys.stderr)
@@ -2503,8 +2516,12 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     run_dir.mkdir(parents=True, exist_ok=True)
     if via != 'direct':
         flags.add('--no-findings')
-    if via == 'panel' and os.environ.get('AIW_PANEL_FORMAT') == '1':
+    panel_format = via == 'panel' and os.environ.get('AIW_PANEL_FORMAT') == '1'
+    if panel_format:
         prompt += PANEL_FORMAT
+    stdin_used = prompt_file == '-'
+    if panel_format or stdin_used:
+        # 标准输入来的 prompt 也落在本单 run 目录，转发命令仍收到文件路径。
         prompt_file = str(run_dir / 'forward-prompt.md')
         Path(prompt_file).write_text(prompt, encoding='utf-8')
     argv = command + [seat, workdir, timeout_s, prompt_file]
@@ -2556,7 +2573,8 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     started = time.monotonic()
     interruption = None
     try:
-        proc = subprocess.Popen(argv, env=env)
+        # prompt 已从标准输入读走；终端上 Ctrl-D 后转发命令仍可能等输入。
+        proc = subprocess.Popen(argv, env=env, stdin=subprocess.DEVNULL if stdin_used else None)
     except OSError as exc:
         print(f'[ai-worker] 转发不可用（{exc}），改在本机执行', file=sys.stderr)
         return None
@@ -2665,6 +2683,13 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         print(__doc__, file=sys.stderr)
         return 64
     seat, workdir, timeout_s, prompt_file = args
+    stdin_prompt = None
+    if prompt_file == "-":
+        try:
+            stdin_prompt = read_stdin_prompt()
+        except ValueError as e:
+            print(f"[ai-worker] {e}", file=sys.stderr)
+            return 64
     verify = values.get("verify", [])
     verify_timeout = values.get("verify_timeout", 1200)
     if verify and ("--ro" in flags or seat in ("review", "draft")):
@@ -2696,7 +2721,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
             return 64
         if command:
             rc = forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
-                                  inflight, before_execute=before_execute)
+                                  inflight, before_execute=before_execute, prompt=stdin_prompt)
             if rc is not None:
                 return rc
     role = None
@@ -2758,7 +2783,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     timeout = int(timeout_s)
     workdir = str(Path(workdir).resolve())
     try:
-        prompt = Path(prompt_file).read_text(encoding="utf-8")
+        prompt = stdin_prompt if stdin_prompt is not None else Path(prompt_file).read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as e:
         print(f"[ai-worker] 读不了 prompt 文件 {prompt_file}：{e}", file=sys.stderr)
         return 64

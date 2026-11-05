@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """会诊：同一个 prompt 同时发给几家（只读、不顶替），收齐各自的独立意见。
 
-    aiw panel <workdir> <timeout_s> <prompt_file|prompt文本> [seat ...] [--attach 文件 ...] [--prior 文件] [--free] [--full] [--text]
+    aiw panel <workdir> <timeout_s> <prompt_file|prompt文本|-> [seat ...] [--attach 文件 ...] [--prior 文件] [--free] [--full] [--text]
+    第三个参数写 - 时从标准输入读 prompt。
     --free 使用 panel_free 免费座位，同样去掉主会话自己；不能同时显式指定座位。
     --attach 预检读取一次，渲染进共用 prompt 快照，各家（含 CLI 座位）收到同一份全文；合计超过 30KB 提醒。
     --text 逐座位传给 worker，workspace 座位禁用工具；附件保留不能假设读取其它文件的提示。
@@ -57,7 +58,7 @@ def ask(seat: str, workdir: str, timeout: str, prompt_file: str, out: Path, full
     if text_mode:
         argv.append("--text")
     limit = int(timeout) + float(os.environ.get("AIW_PANEL_GRACE", "90"))
-    p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+    p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         stdout, stderr = p.communicate(timeout=limit)
     except subprocess.TimeoutExpired:
@@ -76,7 +77,7 @@ def ask(seat: str, workdir: str, timeout: str, prompt_file: str, out: Path, full
 
 def main() -> int:
     sys.path.insert(0, str(HERE))
-    from ai_worker import split_argv, read_attachments, render_attachments, warn_large_attachments, AttachError, agent_use_workspace, main_agent, disabled_seat, print_disabled, errand_names, StateError
+    from ai_worker import read_stdin_prompt, split_argv, read_attachments, render_attachments, warn_large_attachments, AttachError, agent_use_workspace, main_agent, disabled_seat, print_disabled, errand_names, StateError
     try:
         values = {}
         args, flags, attach = split_argv(sys.argv[1:], {"--attach", "--free", "--prior", "--full", "--text"}, values=values)
@@ -173,7 +174,13 @@ def main() -> int:
         return 64
     if attachment_files:
         warn_large_attachments(attachment_files)
-    if not Path(prompt_file).is_file():
+    if prompt_file == "-":
+        try:
+            text, prompt_file = read_stdin_prompt(), None
+        except ValueError as e:
+            print(e, file=sys.stderr)
+            return 64
+    elif not Path(prompt_file).is_file():
         # 第三个参数不是文件就当 prompt 文本，落盘后再分发
         text, prompt_file = prompt_file, None
     out = STATE / "panels" / format_panel_id(dt.datetime.now(), os.getpid())
