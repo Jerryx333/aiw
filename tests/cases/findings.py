@@ -21,6 +21,12 @@ def findings_parse_strip():
             body, result, error = f.parse('正文\n' + empty_block)
             check(body == '正文' and error is None and result == {**answers, 'observations': []},
                   f'空观察未过滤或回答被修改: {value!r}: {result}')
+        check(f.render(f.parse('正文\n' + block)[1]) == '---\n【aiw 观察记录】\n'
+              '- 偏离：改了步骤\n- 放弃：放弃\n- 现象 | 应怎样：预期 | 证据：f.py:12 | 位置：f.py:main\n', '摘要渲染不对')
+        check(f.render({**answers, 'observations': []}) == '', '全空不应附摘要')
+        leaked = f.render({**answers, 'observations': [{'observation': '日志里有 ghp_' + 'a' * 30,
+                                                        'expected': '', 'evidence': '', 'location': ''}]})
+        check('ghp_' not in leaked and '未显示' in leaked, '密钥被回显到 stdout')
         check(f.parse('<<<AIW-FINDINGS\n- observation: 无\nAIW-FINDINGS>>>') ==
               ('', {**dict.fromkeys(answers, ''), 'observations': []}, None), '只有无观察的块未被识别')
         for bad in (block + '\n正文\n' * 4, '<<<AIW-FINDINGS\nguess: 无',
@@ -186,7 +192,9 @@ def findings_worker_collect():
     with tempfile.TemporaryDirectory() as td:
         root = Path(td); run, work, prompt, output, harness = findings_worker_fixture(root)
         r, row, records = run()
-        check(r.returncode == 0 and r.stdout == '正文\n', r.stderr + repr(r.stdout))
+        check(r.returncode == 0 and r.stdout == '正文\n\n---\n【aiw 观察记录】\n'
+              '- 现象一 | 应怎样：预期 | 证据：test.py:1\n- 现象二 | 应怎样：预期 | 位置：test.py:main\n',
+              r.stderr + repr(r.stdout))
         check([x['type'] for x in records] == ['answers', 'observation', 'observation'], str(records))
         check(len({x['id'] for x in records}) == 3, '重复 id')
         for x in records:
@@ -254,7 +262,7 @@ def findings_worker_trailing():
         run, _, _, output, _ = findings_worker_fixture(Path(td))
         output.write_text('正文\n' + FINDINGS_BLOCK + '\n派单记录')
         r, row, records = run()
-        check(r.returncode == 0 and r.stdout == '正文\n派单记录\n' and row['kind'] == 'ok' and
+        check(r.returncode == 0 and r.stdout.startswith('正文\n派单记录\n\n---\n【aiw 观察记录】') and row['kind'] == 'ok' and
               row['findings_n'] == 2 and len(records) == 3 and '格式不对' not in r.stderr,
               r.stderr + repr(r.stdout))
         check((Path(row['run_dir']) / 'output.md').read_text() == output.read_text(), '原文未保留')

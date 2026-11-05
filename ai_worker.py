@@ -2947,7 +2947,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                                     if not body.strip():
                                         r.update(kind="empty", rc=2, err=r["err"] + "\n只有记录块，没有正文")
                                     elif record_findings(workdir, seat, s, via, ro, prompt_id, r.get("run_dir"), parsed, changes, text=text):
-                                        r["out"] = body
+                                        notes = findings.render(parsed)
+                                        r["out"] = body + ("\n\n" + notes if notes else "")
                                     else:
                                         parsed = None
                                 elif error:

@@ -213,6 +213,20 @@ def parse(out: str) -> tuple[str, dict | None, str | None]:
     answer = "\n".join(part for part in (out[:pos].rstrip(), trailing) if part)
     notice = "已保留记录块后的少量正文" if trailing else None
     return answer, {**result, "observations": observations}, notice
+def render(parsed: dict) -> str:
+    """剥离记录块后附在 stdout 末尾的摘要；正文常写「见下方范围外记录」，不附就断了引用。"""
+    labels = {"guess": "猜测", "deviation": "偏离", "abandoned": "放弃"}
+    empty = re.compile(r"(?:无|没有|none|n/a)?[.。]?", re.IGNORECASE)
+    lines = [f"- {label}：{parsed[key].strip()}" for key, label in labels.items()
+             if not empty.fullmatch(parsed[key].strip())]
+    names = (("observation", ""), ("expected", "应怎样："), ("evidence", "证据："), ("location", "位置："))
+    for item in parsed["observations"]:
+        lines.append("- " + " | ".join(prefix + item[key].strip() for key, prefix in names if item[key].strip()))
+    # 与 record 同一套密钥扫描：命中的行在缓冲区里进了隔离日志，这里也不能原样回显。
+    context = build_scan_context()
+    lines = [line if not has_secret(line, context) else "- （疑似含密钥，未显示，原文见 output.md）"
+             for line in lines]
+    return "\n".join(["---", "【aiw 观察记录】", *lines]) + "\n" if lines else ""
 def sanitize(text: str, limit: int) -> str:
     text = "\n".join(line for line in text.splitlines() if not line.lstrip().startswith("```"))
     return " ".join(text.split())[:max(0, limit)]
