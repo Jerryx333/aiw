@@ -600,6 +600,26 @@ def codex_tokens(stderr: str) -> dict:
         return {"tokens": None, "tokens_null_reason": "error"}
 
 
+USAGE_FIELDS = ("input", "cached", "cache_write", "output", "reasoning")
+
+
+def rollout_usage(tokens) -> dict | None:
+    """校验 rollout 用量；格式不对返回 None（转发回传只认这一种，不估算）。"""
+    if not isinstance(tokens, dict) or tokens.get("source") != "rollout":
+        return None
+    keys = (*USAGE_FIELDS, "calls")
+    if set(tokens) != {*keys, "source"} or not all(type(tokens[k]) is int and tokens[k] >= 0 for k in keys):
+        return None
+    return {k: tokens[k] for k in (*keys, "source")}
+
+
+def save_usage(run_dir, tokens) -> None:
+    """在 run 目录留 usage.json，供转发命令把执行端用量带回发起方；失败只影响测量。"""
+    usage = rollout_usage(tokens)
+    if run_dir and usage is not None:
+        write_run_file(Path(run_dir) / "usage.json", json.dumps({"tokens": usage}, ensure_ascii=False))
+
+
 def ledger(row: dict) -> None:
     STATE.mkdir(parents=True, exist_ok=True)
     row = {"ts": now(), "host": socket.gethostname(), "session": session_id(), **row}
@@ -2599,6 +2619,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         except OSError as exc:
             print(f'[ai-worker] 警告：写 provider 失败：{exc}', file=sys.stderr)
     host = metadata.get('host') if isinstance(metadata.get('host'), str) else None
+    usage = rollout_usage(metadata.get('tokens'))
     kind = 'ok' if rc == 0 else 'other'
     verify_fields = {}
     if values.get('verify'):
@@ -2629,6 +2650,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
             'prompt': prompt_id,
             'ro': ro, 'model': 'default', 'run_dir': str(run_dir), 'kind': kind,
             'rc': rc, 'secs': round(time.monotonic() - started, 1), 'substituted': False, 'err_tail': '',
+            **({'tokens': usage} if usage is not None else {}),
             **({'effort': values['effort']} if values.get('effort') else {})})
     if interruption is not None:
         raise interruption
@@ -2987,11 +3009,14 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             finish_substitute(token, success)
                     if not ro and r['kind'] == 'ok' and r.get('run_dir'):
                         changes.save_evidence(r['run_dir'], source_root if worktree_fields else None)
+                    token_fields = ((r.get("token_fields") or codex_tokens(r["err"]))
+                                    if seat_adapter(s) == "codex" and not r["kind"].startswith("skipped_") else {})
                     ledger({**text_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
                             "run_dir": r.get("run_dir"),
                             "kind": r["kind"], "rc": r["rc"], "secs": r["secs"], "substituted": s != seat,
                             "err_tail": r["err"][-300:],
-                            **((r.get("token_fields") or codex_tokens(r["err"])) if seat_adapter(s) == "codex" and not r["kind"].startswith("skipped_") else {})})
+                            **token_fields})
+                    save_usage(r.get("run_dir"), token_fields.get("tokens"))
                 last_result = r
                 if interruption is not None:
                     raise interruption

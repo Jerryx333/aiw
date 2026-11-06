@@ -32,8 +32,12 @@ def codex_tokens_rollout():
         for seat in ('codex', 'codex-sol'):
             result, row = token_worker(t, f'session id: {sid}\ntokens used\n500\n', seat)
             check(result.returncode == 0 and row['tokens'] == expected and 'tokens_null_reason' not in row, str(row))
+            # 执行端在 run 目录留 usage.json，转发命令据此把用量带回发起方。
+            saved = json.loads((Path(row['run_dir']) / 'usage.json').read_text())
+            check(saved == {'tokens': expected}, saved)
         result, row = token_worker(t, '', 'qoder')
         check(result.returncode == 0 and 'tokens' not in row and 'tokens_null_reason' not in row, str(row))
+        check(not (Path(row['run_dir']) / 'usage.json').exists(), row)
         (t / 'state/disabled.json').write_text(json.dumps({'codex': {'reason': 'test'}}))
         result, row = token_worker(t, f'session id: {sid}\n')
         check(row['kind'].startswith('skipped_') and row['rc'] is None and 'tokens' not in row and 'tokens_null_reason' not in row, str(row))
@@ -69,6 +73,7 @@ def codex_tokens_fallback():
         result, row = token_worker(t, stderr)
         check(result.returncode == 0 and row['tokens'] == dict(source='stderr', uncached_plus_output=24324)
               and row['tokens_null_reason'] == 'rollout_missing', str(row))
+        check(not (Path(row['run_dir']) / 'usage.json').exists(), 'stderr 兜底不回传')
         for err in ('', 'session id: ../../bad\n'):
             result, row = token_worker(t, err)
             check(result.returncode == 0 and row['tokens'] is None and row['tokens_null_reason'] == 'no_session_id', str(row))

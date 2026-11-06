@@ -102,7 +102,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | model | `agent_use` 座位的完成记录为实际产出答复的模型，按 `actual_model` → `selected_model` → `requested_model` 取值，都缺失时回退到座位配置；其他座位为座位配置的模型，未配置时为 `default` |
 | freecheck | 每日免费检测由 freecheck.py 写入 true；周报座位质量统计据此剔除检测行，同时不计 skipped_* 跳过行 |
 | agent_use_versions | 可选字符串：status.json 有 scheduler_versions 时，对 `{"scheduler": scheduler_versions, "adapter": 最后一个 attempt 的 adapter_versions 或 {}}` 以 `json.dumps(sort_keys=True, separators=(",", ":"))` 序列化，取 UTF-8 字节的 SHA256 前 12 位；仅记录摘要，不保存原始映射。旧版无 scheduler_versions 时不写此字段 |
-| tokens | 仅实际执行座位的 seat_adapter(s) == "codex" 时写入，包含别名座位；历史用量报告按账本 token 元数据及 actual 汇总，不依赖当前座位配置。rollout 为 `{input: int, cached: int, cache_write: int, output: int, reasoning: int, calls: int, source: "rollout"}`，取最后非空 total_token_usage，calls 为非空 info 的 token_count 事件数；input 含缓存命中；rollout 在 CODEX_HOME、~/.codex、状态目录下的 codex-home 三处查找。stderr 兜底为 `{uncached_plus_output: int, source: "stderr"}`，为 input − cached + output，不含缓存命中；两者不可混算。无法测量时为 null；文本座位、跳过及旧记录没有此键 |
+| tokens | 仅实际执行座位的 seat_adapter(s) == "codex" 时写入，包含别名座位；转发单另见下文，取执行端回传的 rollout 用量；历史用量报告按账本 token 元数据及 actual 汇总，不依赖当前座位配置。rollout 为 `{input: int, cached: int, cache_write: int, output: int, reasoning: int, calls: int, source: "rollout"}`，取最后非空 total_token_usage，calls 为非空 info 的 token_count 事件数；input 含缓存命中；rollout 在 CODEX_HOME、~/.codex、状态目录下的 codex-home 三处查找。stderr 兜底为 `{uncached_plus_output: int, source: "stderr"}`，为 input − cached + output，不含缓存命中；两者不可混算。无法测量时为 null；文本座位、跳过及旧记录没有此键 |
 | tokens_null_reason | rollout 未用上时的原因：no_session_id、rollout_missing、rollout_unparsed、error；stderr 兜底或 tokens=null 时出现，正常 rollout 不写此键。异常只影响测量，不改变派单结果 |
 | findings_n | 可选整数，本次收集的 observation 条数；未收集时无此键，展示端不依赖它 |
 | changed_files | #6：写任务每次尝试相对派单开始时的变化文件数；非 git 或统计失败为 null；只读任务没有这个键 |
@@ -113,7 +113,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | workdir | #9：仅 repo 为 null 时记录工作目录的绝对真实路径，否则为 null；旧记录可能缺失 |
 | effort | 字符串，可选；codex / codex-sol 本次实际推理档位（low/medium/high），其他座位不出现；weekly.py 按 (seat, effort) 计数 |
 
-转发最终结果只记一条账本；rc=69 或命令启动失败不记转发尝试，回退后按原本机流程记账。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录远端 token 或本机文件改动统计。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
+转发最终结果只记一条账本；rc=69 或命令启动失败不记转发尝试，回退后按原本机流程记账。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录本机文件改动统计。`forward.json` 带 `tokens` 且为合法 rollout 格式（与本机 codex 行同样的七个键、非负整数、`source: "rollout"`）时原样写入 `tokens`，否则不写此键，也不写 `tokens_null_reason`；不估算。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
 
 ## breaker.json
 

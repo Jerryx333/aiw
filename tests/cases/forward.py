@@ -72,7 +72,19 @@ def forward_protocol():
             r = sh(cmd, env=dict(env, FORWARD_META=meta))
             check(r.returncode == 0, r)
             row = json.loads((Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()[-1])
-            check(row['actual'] == 'qoder' and row['forward_host'] is None, row)
+            check(row['actual'] == 'qoder' and row['forward_host'] is None and 'tokens' not in row, row)
+        # 执行端回传的 rollout 用量并进本机账本；格式不对就不写，不估算。
+        usage = dict(input=1000, cached=600, cache_write=20, output=100, reasoning=30, calls=2, source='rollout')
+        r = sh(cmd, env=dict(env, FORWARD_META=json.dumps(dict(actual='codex', host='remote', tokens=usage))))
+        row = json.loads((Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+        check(r.returncode == 0 and row['executor'] == 'forward' and row['actual'] == 'codex' and row['tokens'] == usage
+              and 'tokens_null_reason' not in row, row)
+        for bad in [None, 'x', [], dict(usage, source='stderr'), dict(uncached_plus_output=5, source='stderr'),
+                    dict(usage, input=-1), dict(usage, output=1.5), dict(usage, output=True),
+                    {k: v for k, v in usage.items() if k != 'calls'}, dict(usage, extra=1)]:
+            r = sh(cmd, env=dict(env, FORWARD_META=json.dumps(dict(actual='codex', host='remote', tokens=bad))))
+            row = json.loads((Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+            check(r.returncode == 0 and row['actual'] == 'codex' and 'tokens' not in row, (bad, row))
 
 
 def forward_fallback_and_exclusions():
