@@ -25,7 +25,7 @@ panel/map 子单追加 `--no-findings`，远端不收集观察记录。panel 保
 
 退出码 **69 必须表示不可达且尚未排队**，aiw 打印「[ai-worker] 转发不可用（rc=69），改在本机执行」，再完整执行原本机流程（含角色解析）。命令不存在、不可执行等启动 OSError 同样说明原因并回退。其他退出码是最终结果，不能用 69 表示已经排队或执行后的失败，以免重复执行。写单返回 0 且带 `--verify` 时，在本机 workdir 用现有验收逻辑执行，验收失败返回 4。
 
-本机 run 目录保存 `task.txt`，命令可写 `output.md` 与 `forward.json`：`{"actual": "远端实际座位", "host": "远端展示名", "tokens": {…}}`。actual、host 均可缺失，只接受字符串；损坏或非对象 JSON 忽略。tokens 可缺失，须与本机账本的 rollout 用量同格式（`input/cached/cache_write/output/reasoning/calls` 非负整数加 `source: "rollout"`），合法时写进本机账本这一行，否则忽略。执行端 aiw 在 codex 尝试量到 rollout 用量时会在该尝试的 run 目录（「全文」所在目录）写 `usage.json`：`{"tokens": {…}}`，转发命令可读它填 tokens。未提供 actual 时记原始角色或座位名。最终结果写本机账本并加 `executor: "forward"`、`forward_host`（可空），不写本机熔断、不计顶替配额、不做免费座位保护判定。`output_saved` 以 `output.md` 存在为准，正常成功时由 main 打印本机「全文」路径；评分与周报允许未知实际座位。账本字段详见 [状态契约](state-contract.md#seat-ledgerjsonl)。
+本机 run 目录保存 `task.txt`，命令可写 `output.md` 与 `forward.json`：`{"actual": "远端实际座位", "host": "远端展示名", "tokens": {…}}`。actual、host 均可缺失，只接受字符串；损坏或非对象 JSON 忽略。tokens 可缺失，须与本机账本的 rollout 用量同格式（`input/cached/cache_write/output/reasoning/calls` 非负整数加 `source: "rollout"`），合法时写进本机账本这一行，否则忽略。执行端 aiw 在 codex 尝试量到 rollout 用量时会在该尝试的 run 目录（成功时「全文」所在目录，失败时「排查」指向的目录）写 `usage.json`：`{"tokens": {…}}`，转发命令可读它填 tokens。未提供 actual 时记原始角色或座位名。最终结果写本机账本并加 `executor: "forward"`、`forward_host`（可空），不写本机熔断、不计顶替配额、不做免费座位保护判定。`output_saved` 以 `output.md` 存在为准，正常成功时由 main 打印本机「全文」路径；评分与周报允许未知实际座位。账本字段详见 [状态契约](state-contract.md#seat-ledgerjsonl)。
 
 ## 角色与单家安装
 
