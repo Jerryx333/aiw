@@ -29,6 +29,9 @@ def findings_parse_strip():
         check('ghp_' not in leaked and '未显示' in leaked, '密钥被回显到 stdout')
         check(f.parse('<<<AIW-FINDINGS\n- observation: 无\nAIW-FINDINGS>>>') ==
               ('', {**dict.fromkeys(answers, ''), 'observations': []}, None), '只有无观察的块未被识别')
+        for empty in ('无', '没有。', 'None', ' n/a '):
+            check(f.parse('正文\n<<<AIW-FINDINGS\n' + empty + '\nAIW-FINDINGS>>>') ==
+                  ('正文', {**dict.fromkeys(answers, ''), 'observations': []}, None), f'只写「{empty}」的块未被识别')
         for bad in (block + '\n正文\n' * 4, '<<<AIW-FINDINGS\nguess: 无',
                     'inline ' + block, block.replace('\nAIW-FINDINGS>>>', ' AIW-FINDINGS>>>')):
             stripped, parsed, error = f.parse(bad)

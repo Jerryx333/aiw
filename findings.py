@@ -207,6 +207,8 @@ def parse(out: str) -> tuple[str, dict | None, str | None]:
                 target[previous] = pair[1].strip()
             elif previous is not None:
                 target[previous] = (target[previous] + " " + line).strip()
+    if not recognized and re.fullmatch(r"\s*(?:无|没有|none|n/a)[.。]?\s*", body, re.IGNORECASE):
+        recognized = True  # 提示写的是「无则写无」，整块只写一个「无」就是合法空块
     if not recognized:
         return out, None, "记录块没有已知协议字段"
     # 调用方以 parsed 是否存在区分成功与坏块；第三项也可携带非致命提示。
