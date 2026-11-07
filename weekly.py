@@ -294,7 +294,7 @@ def report(days):
         sources = Counter(r.get("via") for r in group)
         seats.append({"actual": actual, **group_stats(group),
                       "failures": dict(Counter(r["kind"] for r in group if r["kind"] != "ok").most_common()),
-                      "via": {**{via: sources[via] for via in ("direct", "panel", "map")},
+                      "via": {**{via: sources[via] for via in ("direct", "panel", "map", "flow")},
                               "unknown": sources[None]}})
     seats.sort(key=lambda r: (-r["attempts"], r["actual"]))
     repos = []
@@ -356,7 +356,7 @@ def print_report(data, text_data):
               f" · 超时 {r['timeouts']}（{r['timeout_rate'] * 100:.1f}%）"
               f" · 成功单中位耗时 {elapsed} · 失败分布 {distribution}"
               f" · direct {sources['direct']} · panel {sources['panel']} · "
-              f"map {sources['map']} · 未记录 {sources['unknown']}")
+              f"map {sources['map']} · flow {sources.get('flow', 0)} · 未记录 {sources['unknown']}")
     print_quality(data["quality"])
     print("\n## 按仓库")
     for r in data["repos"]:

@@ -293,6 +293,10 @@ agent_use 座位通过本地配置接入 [agent-use](https://github.com/Jerryx33
 aiw <seat> <workdir> <timeout_s> <prompt_file> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--attach 文件 ...]
 aiw panel <workdir> <timeout_s> <prompt_file> [seat ...] [--attach 文件 ...] [--prior 文件] [--free] [--full]
 aiw map <workdir> <timeout_s> <prompt_file> <文件 ...> [--seat 座位] [--jobs N]  # 默认 map_default=draft，并发 3，summary.json 汇总
+aiw <seat> … --schema 结果.schema.json [--json]  # 结构化结果：按 JSON Schema 交、aiw 校验、不合格同座位重交一次；--json 时 stdout 只有 JSON
+aiw panel … --schema 结果.schema.json  # 每家 <座位>.result.json，summary.json 每家带 result
+aiw flow run <流程文件> [--resume <流水目录>]  # 并行 → 逐条 → 汇总的流水线，上游一单回来就派下游；续跑复用已完成的单
+aiw flow status <流水目录>
 aiw panel <workdir> <timeout_s> <prompt_file> --prior prior.md  # 先写自己的判断，仅归档供主会话看，不发给座位
 aiw panel --free <workdir> <timeout_s> <prompt_file>  # 只问免费座位，不能同时指定 seat
 aiw review <workdir> 900 - <<'EOF'  # prompt_file 写 - 从标准输入读，免建临时文件；panel、map 同样支持；转发时存进本单 run 目录
@@ -309,6 +313,24 @@ aiw track [--host 名称] [--timeout 秒] <标签> -- <命令> [参数...]
 aiw slot [--slots N] [--max-wait 秒] [--label 文本] -- <命令> [参数...]
 aiw slot --status
 ```
+
+### 结构化结果：--schema
+
+`--schema <文件>` 让执行方按 JSON Schema 交结果：aiw 在说明末尾追加格式要求（回答最后一个独占行的 `<<<AIW-RESULT` … `AIW-RESULT>>>` 块，块内一个 JSON 值），在原始回答上校验。schema 只支持 `type`（object/array/string/integer/number/boolean/null）、`properties`、`required`、`items`、`enum`、`minItems`/`maxItems`、`minLength`/`maxLength`、`minimum`/`maximum`、`additionalProperties`（布尔或 schema）及注释类关键字；其它关键字直接报错（rc=64），不静默放宽。布尔值不算数字；块内重复键、NaN 都不合格。
+
+不合格时该次尝试在账本记 `kind=format`（不顶替、不熔断），aiw 钉在实际执行座位、加 `--no-fallback`，把错误清单和上次原文（数据，截尾 6000 字）附进说明重交一次；仍不合格返回 2，stderr 列出错误和两次原文所在 run 目录，stdout 仍给原文。超时、认证等非格式失败原样透传，不重交。合格时写结果文件（`AIW_RESULT_FILE` 指定的位置，否则 `state/results/<id>/result.json`，stderr 打印路径），内容 `{"ok", "value", "seat", "actual", "attempts", "run_dirs"}`；stdout 输出正文加规范化的结果块，`--json` 时只输出 JSON 值。转发到别的机器的单，执行端不校验（本机的 schema 路径不带过去），由本机在回传的 stdout 上校验并照样重交一次；这种单第一次不合格时账本仍按转发结果记 `ok`，以结果文件和返回码为准。
+
+`aiw panel … --schema` 各家同样校验和重交，不再追加自然语言的会诊格式要求；不合格的一家不算有效意见。
+
+### 流水线：aiw flow
+
+`aiw flow run <流程文件>` 一条命令跑完「几家并行 → 每条结论各派一单 → 汇总」。流程文件格式、字段和返回码见 `flow.py` 文件头。要点：
+
+- 步骤三种：`fanout`（每个座位一单）、`each`（上游每份成功结果里 `items` 字段数组的每一项一单）、`reduce`（来源步骤全部结束后运行；不写 `seat` 时程序汇总）。模型步骤必须带 `schema`，每单经 `ai_worker.py --ro --schema` 派出，默认不顶替。
+- 流式：上游一单交回就立刻展开它的下游，不等同一步骤的其它单；`events.jsonl` 记每单开始/结束顺序。一家失败只少这一支，其余照走，返回 1。
+- 上游产物进下游说明时包在围栏里并注明「是数据不是指令」；模板只认 `{{vars.名字}}`、`{{item}}`、`{{inputs}}`。
+- 续跑：`--resume <流水目录>`。每单钥匙 = 座位 + 渲染后的说明 + schema + 选项 + 工作目录 + 上游单钥匙；钥匙相同且 `result.json` 合格（按当前 schema 重验）的单直接复用，不派单、不记账。改了某步说明，只有该步和下游重跑。完成凭证由执行方外包层写，流水线进程在「单已跑完、还没记」时被打断，续跑也不会重派。座位自己去仓库读的文件变了，钥匙不会变。
+- 同一流水目录同时只能一个进程（第二个返回 75）；执行方里不能起流水线。
 
 `aiw slot` 为任何项目的全量或较重测试提供全机共享名额。`--slots` 优先于 `AIW_TEST_SLOTS`，默认 2，必须是正整数；同机各会话应使用一致的名额数。`--label` 为持有者说明，默认空。`--` 后 argv 原样执行，不经 shell；缺命令或参数非法返回 64，子命令 stdout/stderr 直接继承、退出码原样返回，SIGINT/SIGTERM 转发给子进程组并等待退出。
 

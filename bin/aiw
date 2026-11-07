@@ -17,6 +17,7 @@
 #   aiw doctor [--fingerprint] 检查各座位 CLI 安装/版本/熔断
 #   aiw panel <workdir> <timeout_s> <prompt_file> [seat ...] [--attach 文件 ...] [--free]   同时问几家，收齐独立意见
 #   aiw map <workdir> <timeout_s> <prompt_file> <文件 ...> [--seat 座位] [--jobs N]   逐文件并行派单
+#   aiw flow run <流程文件> [--resume <流水目录>] | aiw flow status <流水目录>   多步流水线（并行→逐条→汇总，可续跑）
 #   aiw handoff --template | --path | <交接文件> [--workdir DIR] [--dry-run]
 #   aiw route "消息"            看这条消息会派给谁
 #   aiw goal init|next|verify|status <goal.json>
@@ -83,6 +84,7 @@ case "$cmd" in
   route)    shift; exec "$PY" "${H}/route.py" "$@" ;;
   panel)    shift; exec "$PY" "${H}/panel.py" "$@" ;;
   map)      shift; exec "$PY" "${H}/map.py" "$@" ;;
+  flow)     shift; exec "$PY" "${H}/flow.py" "$@" ;;
   goal)     shift; exec "$PY" "${H}/goal.py" "$@" ;;
   tui)      shift; exec "$PY" "${H}/tui.py" launch "$@" ;;
   tui-status) shift; exec "$PY" "${H}/tui.py" status "$@" ;;

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# 用途：清理过期 runs/panels/maps 子目录及 codex-home 日期会话目录；运行：python3 gc.py [天数] [--dry-run]
+# 用途：清理过期 runs/panels/maps/flows/results 子目录及 codex-home 日期会话目录；运行：python3 gc.py [天数] [--dry-run]
 # 依赖：Python 3.11+ 标准库；状态目录由 AIW_STATE 指定。
 import os
 import datetime as dt
@@ -43,7 +43,7 @@ def main() -> int:
         for path in sorted(archive.glob("*.files")):
             if not path.is_symlink() and path.is_dir() and path.stat().st_mtime < cutoff:
                 candidates.append(path)
-    for name in ("runs", "panels", "maps"):
+    for name in ("runs", "panels", "maps", "flows", "results"):
         parent = state / name
         if parent.is_symlink() or not parent.exists():
             continue

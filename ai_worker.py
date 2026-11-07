@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 import findings
+import structured
 from gitenv import repository_git_env
 import slot
 
@@ -2255,6 +2256,13 @@ def split_argv(argv: list[str], allowed: set[str], *, values: dict | None = None
             if v is None or not v.isascii() or not v.isdigit() or int(v) <= 0:
                 raise AttachError("--verify-timeout 应为正整数秒")
             values["verify_timeout"] = int(v)
+        elif a == "--schema":
+            if "schema" in values:
+                raise AttachError("--schema 只能出现一次")
+            v = next(it, None)
+            if v is None or v.startswith("--"):
+                raise AttachError("--schema 后面缺 schema 文件路径")
+            values["schema"] = v
         elif a == "--attach":
             v = next(it, None)
             if v is None or v.startswith("--"):
@@ -2451,11 +2459,25 @@ def main() -> int:
             liveness_lock.close()
 
 
+DECLARED = re.compile(r"^\s*\**结果[:：]\s*(成功|失败)", re.M)
+
+
+def declared_fields(output: str | None) -> dict:
+    """执行方末尾自报的「结果：成功 / 结果：失败：原因」，只作元数据，不替代 aiw 自己的判定。"""
+    if output is None:
+        return {}
+    tail = "\n".join(output.rstrip().splitlines()[-30:])
+    found = DECLARED.findall(tail)
+    return {"declared": {"成功": "success", "失败": "failure"}[found[-1]] if found else "undeclared"}
+
+
 def call_via() -> str:
     if os.environ.get("AIW_PANEL_DIR"):
         return "panel"
     if os.environ.get("AIW_MAP_DIR"):
         return "map"
+    if os.environ.get("AIW_FLOW_DIR"):
+        return "flow"
     return "direct"
 
 
@@ -2556,8 +2578,11 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     if via == 'panel':
         env['AIW_PANEL_FORMAT'] = '0'  # 转发 prompt 已含格式，执行端不再追加。
     env.pop('AIW_FORWARD_GROUP', None)
+    # --schema 的内层校验路径只在本机有效：执行端不校验，由本机外包层在回传的 stdout 上校验。
+    env.pop('AIW_SCHEMA_FILE', None)
+    env.pop('AIW_SCHEMA_REPORT', None)
     if via != 'direct':
-        env['AIW_FORWARD_GROUP'] = str(Path(os.environ['AIW_PANEL_DIR' if via == 'panel' else 'AIW_MAP_DIR']).resolve())
+        env['AIW_FORWARD_GROUP'] = str(Path(os.environ[{'panel': 'AIW_PANEL_DIR', 'map': 'AIW_MAP_DIR', 'flow': 'AIW_FLOW_DIR'}[via]]).resolve())
     # 执行端按它自己的配置选座位：把本机（和上游派单方）停用的座位一起带过去，按角色派单也不会选到。
     skipped = local_off_seats() | caller_skipped()
     env.pop('AIW_SKIP_SEATS', None)
@@ -2961,6 +2986,11 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                         parsed = None
                         change_fields = changes.fields()
                         raw_output = r["out"]
+                        if r["kind"] == "ok":
+                            # --schema 外包层传进来的格式校验：在原始回答上判定，不合格记 format（不顶替、不熔断）。
+                            schema_errors = structured.inner_check(raw_output, r.get("run_dir"), s)
+                            if schema_errors:
+                                r.update(kind="format", schema_invalid=True, err=r["err"] + "\n结构化结果不合格：" + "；".join(schema_errors[:5]))
                         if collect and r["kind"] == "ok":
                             try:
                                 body, parsed, error = findings.parse(raw_output)
@@ -3011,7 +3041,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                         changes.save_evidence(r['run_dir'], source_root if worktree_fields else None)
                     token_fields = ((r.get("token_fields") or codex_tokens(r["err"]))
                                     if seat_adapter(s) == "codex" and not r["kind"].startswith("skipped_") else {})
-                    ledger({**text_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
+                    ledger({**text_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), **declared_fields(raw_output if r["kind"] in ("ok", "format") else None), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
                             "run_dir": r.get("run_dir"),
                             "kind": r["kind"], "rc": r["rc"], "secs": r["secs"], "substituted": s != seat,
                             "err_tail": r["err"][-300:],
@@ -3082,7 +3112,10 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                     print(f"[{s}] reason={r.get('reason', r['kind'])}，按顶替链换下一家", file=sys.stderr)
                     continue
                 if r["kind"] in ("format", "empty"):
-                    print(f"[{s}] 跑完但产出不合格（{r['kind']}），不自动改派；检查 prompt 或人工处理。", file=sys.stderr)
+                    if r.get("schema_invalid"):
+                        print(f"[{s}] 结构化结果不合格，交给外层决定是否同座位重交（不顶替）。", file=sys.stderr)
+                    else:
+                        print(f"[{s}] 跑完但产出不合格（{r['kind']}），不自动改派；检查 prompt 或人工处理。", file=sys.stderr)
                     print(r["err"][-800:], file=sys.stderr)
                     return 2
                 # other 是未知原因，不同于明确的 transient；不悄悄改派。
@@ -3095,6 +3128,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
 
 
 if __name__ == "__main__":
+    if "--schema" in sys.argv[1:] or "--json" in sys.argv[1:]:
+        sys.exit(structured.run(sys.argv[1:]))  # 外包一层：内层仍是完整的本程序
     try:
         sys.exit(main())
     except StateError as e:

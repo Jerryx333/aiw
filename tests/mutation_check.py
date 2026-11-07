@@ -254,6 +254,23 @@ MUTATIONS.extend([
      'invariant': 'unexplained 观察仍计入 open', 'file': 'findings.py',
      'old': 'in (None, "unexplained")', 'new': 'in (None,)',
      'tests': ['findings_local_cache_hint'], 'location': 'recompute_count_cache'},
+    {'id': 'schema-retry-once', 'expect': '重交后应成功',
+     'invariant': '结构化结果不合格先同座位重交一次，不直接报错',
+     'file': 'structured.py', 'old': 'if attempts >= 2:', 'new': 'if attempts >= 1:',
+     'tests': ['structured_retry_then_ok'], 'location': 'run'},
+    {'id': 'schema-format-ledger', 'expect': '账本：',
+     'invariant': '结构化结果不合格的尝试在账本记 kind=format（不记成功）',
+     'file': 'ai_worker.py', 'old': '                            if schema_errors:\n',
+     'new': '                            if False:\n',
+     'tests': ['structured_retry_then_ok'], 'location': 'dispatch'},
+    {'id': 'flow-reuse', 'expect': '已完成的单不能重派',
+     'invariant': '流水线续跑复用钥匙相同且已完成的单，不重派',
+     'file': 'flow.py', 'old': '        cached = self.store.reusable(job)', 'new': '        cached = None',
+     'tests': ['flow_resume'], 'location': 'Scheduler.add'},
+    {'id': 'flow-parent-key', 'expect': '改评审说明应重跑评审及下游',
+     'invariant': '上游单钥匙进下游钥匙：上游说明改了，下游即使输入相同也重跑',
+     'file': 'flow.py', 'old': '[p.key for p in parents]', 'new': '[]',
+     'tests': ['flow_resume'], 'location': 'Scheduler.add'},
 ])
 
 

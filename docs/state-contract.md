@@ -98,7 +98,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | 字段 | 含义 |
 | --- | --- |
 | text | 可选布尔值；`--text`（含 draft/map 自动启用）时写入 true，否则省略。隐含 ro；仅 workspace agent_use 禁用工具、access=none，CLI 和非 workspace agent_use 仅受只读约束；顶替链每条执行或跳过记录沿用此值 |
-| via | 调用来源：direct（直接派单）、panel（aiw panel 会诊）、map（aiw map 批处理）；旧记录可能缺失 |
+| via | 调用来源：direct（直接派单）、panel（aiw panel 会诊）、map（aiw map 批处理）、flow（aiw flow 流水线）；旧记录可能缺失 |
 | model | `agent_use` 座位的完成记录为实际产出答复的模型，按 `actual_model` → `selected_model` → `requested_model` 取值，都缺失时回退到座位配置；其他座位为座位配置的模型，未配置时为 `default` |
 | freecheck | 每日免费检测由 freecheck.py 写入 true；周报座位质量统计据此剔除检测行，同时不计 skipped_* 跳过行 |
 | agent_use_versions | 可选字符串：status.json 有 scheduler_versions 时，对 `{"scheduler": scheduler_versions, "adapter": 最后一个 attempt 的 adapter_versions 或 {}}` 以 `json.dumps(sort_keys=True, separators=(",", ":"))` 序列化，取 UTF-8 字节的 SHA256 前 12 位；仅记录摘要，不保存原始映射。旧版无 scheduler_versions 时不写此字段 |
@@ -111,6 +111,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | run_dir | #7：实际运行过的尝试都有 run 目录路径；归档失败或没有运行为 null（跳过记录也可能没有此键） |
 | repo | #8：origin remote 经 findings._repo 规范化后的仓库标识；无 git、无 origin 或解析失败为 null；同仓库不同 worktree 相同，旧记录可能缺失 |
 | workdir | #9：仅 repo 为 null 时记录工作目录的绝对真实路径，否则为 null；旧记录可能缺失 |
+| declared | 可选字符串：执行方回答末尾自报的「结果：成功 / 结果：失败」，记 `success` / `failure`，没写为 `undeclared`；只在有回答的本机尝试（kind 为 ok 或 format）写入，只作元数据，不替代 kind 判定 |
 | effort | 字符串，可选；codex / codex-sol 本次实际推理档位（low/medium/high），其他座位不出现；weekly.py 按 (seat, effort) 计数 |
 
 转发最终结果只记一条账本；rc=69 或命令启动失败不记转发尝试，回退后按原本机流程记账。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录本机文件改动统计。`forward.json` 带 `tokens` 且为合法 rollout 格式（与本机 codex 行同样的七个键、非负整数、`source: "rollout"`）时原样写入 `tokens`，否则不写此键，也不写 `tokens_null_reason`；不估算。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
@@ -158,6 +159,14 @@ worker 创建时原子写入同级 `<run-id>.json`，含 `path`（工作树根�
 ## maps/<YYYYmmdd-HHMMSS>-<pid>/
 
 `aiw map` 保存共用的 `prompt.md` 快照、各单的 `<两位序号>-<文件名>.md`、有错误输出时的 `.stderr.txt` 和成功 worker 写出的 `.provider`。`summary.json` 含 `dir`、`seat`、`jobs`、按输入顺序排列的 `items`（`file`、`rc`、`provider`、`chars`）；没有成功执行方时 provider 为 null。子进程通过 `AIW_MAP_DIR` 标记账本 via=map。`aiw gc` 与 runs、panels 一样清理过期 maps 子目录。
+
+## flows/<YYYYmmdd-HHMMSS>-<pid>/
+
+`aiw flow` 的流水目录：`flow.json`（规范化后的流程，schema 已内联，`source` 为流程文件路径；每次运行或续跑覆盖）、`lock`（fcntl 独占）、`events.jsonl`（每行 `seq`、`ts`、`job`、`event`：begin/resume/start/done/failed/reused/interrupted/expand_failed，可带 `rc`、`seat`；只用于观察，不参与完成判定）、`jobs/<单>/`（`job.json` 含 `id`、`step`、`seat`、`key`、`parents`；`prompt.md`、`schema.json`、执行方外包层写的完成凭证 `result.json`、`answer.md`、`stderr.txt`、`provider`）和成功跑完后的 `report.json`（与 stdout 相同，不含时间、路径和是否复用，同样输入逐字相同）。完成的唯一判定：`job.json` 的 key 等于当前钥匙，`result.json` 为 `ok: true` 且按当前 schema 重验通过；开始一单前先删旧 `result.json` 再写 `job.json`。子进程通过 `AIW_FLOW_DIR` 标记账本 via=flow。`aiw gc` 同样按子目录修改时间清理。
+
+## results/<YYYYmmdd-HHMMSS>-<pid>-<随机>/
+
+带 `--schema` 的单派工作目录：`schema.json` 快照、每次尝试的内层报告 `attempt-<n>.json`（`ok`、`errors`、`actual`、`run_dir`，合格时带 `value`）和 `.provider`；调用方没有指定 `AIW_RESULT_FILE` 时最终结果也写在这里的 `result.json`。`aiw gc` 同样清理。
 
 ## findings/
 

@@ -373,7 +373,7 @@ def weekly_repo_section():
         check(section == expected, section)
         check(r.stdout.index('## 按座位成功率') < r.stdout.index('## 按仓库') < r.stdout.index('被顶替但记成功'), r.stdout)
         check('外包调用 8 次；派单判定 1 条，命中 1，逃生口 0' in r.stdout, r.stdout)
-        check('- codex: 尝试 6 · 成功 3 · 成功率 50.0% · 超时 1（16.7%） · 成功单中位耗时 2s · 失败分布 timeout 1、auth 1、format 1 · direct 5 · panel 1 · map 0 · 未记录 0' in r.stdout, r.stdout)
+        check('- codex: 尝试 6 · 成功 3 · 成功率 50.0% · 超时 1（16.7%） · 成功单中位耗时 2s · 失败分布 timeout 1、auth 1、format 1 · direct 5 · panel 1 · map 0 · flow 0 · 未记录 0' in r.stdout, r.stdout)
         check('被顶替但记成功：1 次' in r.stdout and '## token（codex 类座位）' in r.stdout and '## 改进缓冲区' in r.stdout, r.stdout)
 
 
@@ -400,7 +400,7 @@ def weekly_json():
         seat = data['seats'][0]
         check(seat == dict(actual='codex', attempts=7, ok=3, success_rate=3/7, timeouts=1, timeout_rate=1/7,
                            median_ok_secs=2, failures=dict(timeout=1, auth=1, format=1, other=1),
-                           via=dict(direct=6, panel=1, map=0, unknown=0)), str(seat))
+                           via=dict(direct=6, panel=1, map=0, flow=0, unknown=0)), str(seat))
         check(data['kinds'] == dict(ok=4, timeout=1, auth=1, format=1, skipped_disabled=1, other=1), str(data['kinds']))
         check(data['substituted_ok'] == 1, str(data))
         check(data['repos'][0] == dict(repo='owner/a', key_type='repo', attempts=3, ok=2, success_rate=2/3,
@@ -506,9 +506,9 @@ def weekly_via():
         check(r.returncode == 0, r.stdout + r.stderr)
         section = r.stdout.split('## 按座位成功率\n')[1].split('\n\n')[0]
         expected = ('口径：按实际执行座位；不计 freecheck=true 和 skipped_*；成功与超时按 kind 判断；失败分布取前三项。\n'
-                    '- qoder: 尝试 4 · 成功 3 · 成功率 75.0% · 超时 0（0.0%） · 成功单中位耗时 1s · 失败分布 other 1 · direct 1 · panel 1 · map 1 · 未记录 1\n'
-                    '- antigravity: 尝试 1 · 成功 1 · 成功率 100.0% · 超时 0（0.0%） · 成功单中位耗时 1s · 失败分布 无 · direct 0 · panel 0 · map 1 · 未记录 0\n'
-                    '- workbuddy: 尝试 1 · 成功 1 · 成功率 100.0% · 超时 0（0.0%） · 成功单中位耗时 1s · 失败分布 无 · direct 0 · panel 1 · map 0 · 未记录 0')
+                    '- qoder: 尝试 4 · 成功 3 · 成功率 75.0% · 超时 0（0.0%） · 成功单中位耗时 1s · 失败分布 other 1 · direct 1 · panel 1 · map 1 · flow 0 · 未记录 1\n'
+                    '- antigravity: 尝试 1 · 成功 1 · 成功率 100.0% · 超时 0（0.0%） · 成功单中位耗时 1s · 失败分布 无 · direct 0 · panel 0 · map 1 · flow 0 · 未记录 0\n'
+                    '- workbuddy: 尝试 1 · 成功 1 · 成功率 100.0% · 超时 0（0.0%） · 成功单中位耗时 1s · 失败分布 无 · direct 0 · panel 1 · map 0 · flow 0 · 未记录 0')
         check(section == expected, f'成功率/来源统计错误: {section}')
         check(r.stdout.index('## 结果分类') < r.stdout.index('## 按座位成功率'), '小节位置错误')
 

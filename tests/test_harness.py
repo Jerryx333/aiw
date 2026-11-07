@@ -47,6 +47,7 @@ CASE_MODULES = (
     "codex_home",
     "tui",
     "select_cases",
+    "structured_flow",
 )
 CASES = {}
 MODULE_CASES = {}
