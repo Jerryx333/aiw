@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import math
 import os
 import re
 import signal
@@ -163,6 +164,13 @@ def _no_constant(name):
     raise ValueError(f"不允许 {name}")
 
 
+def _finite(text):
+    value = float(text)
+    if not math.isfinite(value):
+        raise ValueError(f"数值溢出 {text}")
+    return value
+
+
 def extract(text: str) -> tuple[str, object, str | None]:
     """取最后一个独占行的完整结果块。返回 (去块后的正文, 值, 错误)；有错误时正文原样返回，绝不吞原文。"""
     lines = text.splitlines(keepends=True)
@@ -180,7 +188,8 @@ def extract(text: str) -> tuple[str, object, str | None]:
     if fenced:
         raw = fenced.group(1)
     try:
-        value = json.loads(raw, object_pairs_hook=_no_duplicates, parse_constant=_no_constant)
+        value = json.loads(raw, object_pairs_hook=_no_duplicates, parse_constant=_no_constant,
+                           parse_float=_finite)
     except json.JSONDecodeError as e:
         return text, None, f"结果块不是合法 JSON：第 {e.lineno} 行第 {e.colno} 列 {e.msg}"
     except ValueError as e:
@@ -362,9 +371,13 @@ def run(argv: list[str]) -> int:
                 value = report.get("value")
                 body, _, _ = extract(stdout)
             elif report is None and rc in (0, 4):
-                # 转发单：执行端没有报告，本机在回传的 stdout 上自己校验。
+                # 转发单：执行端没有报告，本机在回传的 stdout 上自己校验；实际座位取转发写下的 provider。
                 body, value, errors = check(stdout, schema)
-                report = {"ok": not errors, "errors": errors, "actual": None}
+                try:
+                    actual = Path(env["AIW_PROVIDER_FILE"]).read_text(encoding="utf-8").strip() or None
+                except OSError:
+                    actual = None
+                report = {"ok": not errors, "errors": errors, "actual": actual}
                 if not errors:
                     report["value"] = value
             elif report is None or report.get("ok"):

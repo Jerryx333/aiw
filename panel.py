@@ -64,7 +64,8 @@ def ask(seat: str, workdir: str, timeout: str, prompt_file: str, out: Path, full
     if schema:
         env["AIW_RESULT_FILE"] = str(out / f"{seat}.result.json")
         argv += ["--schema", schema]
-    limit = int(timeout) + float(os.environ.get("AIW_PANEL_GRACE", "90"))
+    # 带 schema 时 worker 最多跑两次（一次格式重交），外层要给够两次的时间。
+    limit = (2 if schema else 1) * int(timeout) + float(os.environ.get("AIW_PANEL_GRACE", "90"))
     p = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
     try:
         stdout, stderr = p.communicate(timeout=limit)

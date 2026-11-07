@@ -252,7 +252,8 @@ class Store:
             return False
 
     def dir(self, job: Job) -> Path:
-        return self.jobs / re.sub(r"[^A-Za-z0-9._-]", "_", job.id.replace("/", "__"))
+        readable = re.sub(r"[^A-Za-z0-9._-]", "_", job.id.replace("/", "__"))[:80]
+        return self.jobs / f"{readable}-{hashlib.sha256(job.id.encode('utf-8')).hexdigest()[:10]}"
 
     def reusable(self, job: Job) -> dict | None:
         """完成的唯一判定：job.json 钥匙相同，result.json 为 ok，且按当前 schema 重验通过。"""

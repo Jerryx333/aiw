@@ -94,7 +94,8 @@ def structured_schema_units():
     body, value, error = st.extract("前文\n<<<AIW-RESULT\n```json\n{\"a\": 1}\n```\nAIW-RESULT>>>\n---\n【aiw 观察记录】\n- x\n")
     check(error is None and value == {"a": 1} and body == "前文\n---\n【aiw 观察记录】\n- x", f"提取不对：{body!r} {value}")
     for bad in ("前文 <<<AIW-RESULT\n{}\nAIW-RESULT>>>", "<<<AIW-RESULT\n{}", "<<<AIW-RESULT\n{bad}\nAIW-RESULT>>>",
-                "<<<AIW-RESULT\n{\"a\": 1, \"a\": 2}\nAIW-RESULT>>>", "<<<AIW-RESULT\nNaN\nAIW-RESULT>>>", "没有块"):
+                "<<<AIW-RESULT\n{\"a\": 1, \"a\": 2}\nAIW-RESULT>>>", "<<<AIW-RESULT\nNaN\nAIW-RESULT>>>",
+                "<<<AIW-RESULT\n1e999\nAIW-RESULT>>>", "<<<AIW-RESULT\n[-1e400]\nAIW-RESULT>>>", "没有块"):
         text, value, error = st.extract(bad)
         check(text == bad and value is None and error, f"坏块没报错或吞了原文：{bad!r}")
     _, value, _ = st.extract("<<<AIW-RESULT\n{\"a\": 1}\nAIW-RESULT>>>\n中间\n<<<AIW-RESULT\n{\"a\": 2}\nAIW-RESULT>>>")
@@ -211,6 +212,11 @@ def structured_forward():
     check(len(log) == 2 and "--no-fallback" in log[1]["argv"] and "格式重交" in log[1]["prompt"], f"转发重交：{log}")
     check(all(not c["schema_env"] for c in log), "本机 schema 路径不能带到执行端")
     check("AIW-RESULT" in log[0]["prompt"], "转发说明应带格式要求")
+    # 按角色派单：重交要钉在执行端实际选中的座位，不能再交给角色重新挑
+    (t / "fwd.json").unlink()
+    p = worker(t, env, "--json", seat="review")
+    log = json.loads((t / "fwd.json").read_text())
+    check(p.returncode == 0 and [c["argv"][0] for c in log] == ["review", "codex-sol"], f"重交没钉住实际座位：{[c['argv'][:1] for c in log]}")
     env["FORWARD_OUTPUTS"] = json.dumps(["没有结果块"])
     (t / "fwd.json").unlink()
     p = worker(t, env)
@@ -361,6 +367,10 @@ def flow_spec_errors():
     broken(lambda s: s["steps"].append(dict(s["steps"][0])), "重复")
     broken(lambda s: s["steps"][2].update(prompt="x"), "程序汇总不写")
     check(not calls(t) and not ledger(env), "流程文件错误时不能派任何单")
+    import flow
+    store = flow.Store(t / "nowhere")
+    job = lambda i: flow.Job(i, "a", "codex", "", {}, "k", (), (), {})
+    check(store.dir(job("a/codex")) != store.dir(job("a__codex")), "不同单的目录不能撞")
     p = sh(flow_cmd(t), env=dict(env, AIW_NESTED="1"))
     check(p.returncode == 64 and "外包" in p.stderr, "执行方里不能起流水线")
     import fcntl
