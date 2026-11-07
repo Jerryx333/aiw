@@ -20,7 +20,7 @@ WEIGHTS = dict(input=1, cache_read=0.1, cache_creation=1.25, output=5)
 STATE = Path(getenv('AIW_STATE', Path(__file__).resolve().parent / 'state'))
 PHASES = ('发起派单', '主会话改代码', '跑测试/验收', '提交/PR', '等待派单',
           '写单/草稿', '调查/读取', '子代理', '文字回复', '其他')
-DISPATCH = re.compile(r'\b(?:aiw|ai_worker\.py)\s+(?:codex-sol|codex|write|claude-write|goal\s+run|review|draft|panel|workbuddy-cn|workbuddy|qoder|opencode|doubao|qianwen|claude|map)(?=\s|$|[;|&])')
+DISPATCH = re.compile(r'\b(?:aiw|ai_worker\.py)\s+(?:codex-sol|codex|write|claude-write|goal\s+run|review|draft|panel|workbuddy-cn|workbuddy|qoduck|qoder|opencode|doubao|qianwen|claude|map)(?=\s|$|[;|&])')
 TEST = re.compile(r'\b(?:pytest|npm\s+(?:run\s+)?test|go\s+test|cargo\s+test|node\s+--test|bun\s+test|swift\s+test|xcodebuild|make)\b|\S*check\.sh\b|tests/test_harness\.py\b|\baiw\s+goal\s+verify\b')
 COMMIT = re.compile(r'\bgit\s+(?:-[^\s]+\s+(?:[^\s]+\s+)?)*?(?:commit|push|merge|rebase|tag)\b|\bgh\s+(?:pr|issue)\b')
 WAIT = re.compile(r'\bsleep\s+\d+(?:\.\d+)?(?=\s|$|[;|&])|\buntil\s|\bps\s+aux\b|\bpgrep\b|/tasks/[^/\s]+\.output\b')
