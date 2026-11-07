@@ -6,6 +6,7 @@ import os
 import socket
 import string
 from pathlib import Path
+from urllib.parse import urlsplit
 
 HERE = Path(__file__).resolve().parent
 ROLE_NAMES = frozenset(('write', 'review', 'draft'))
@@ -92,7 +93,12 @@ def account_errors(seat, path):
     if agent is None:
         errors.append(f'{path} 中转账号只用于 Codex（adapter: codex）或 Claude 座位')
     url = api.get('base_url')
-    if not isinstance(url, str) or not url.startswith(('https://', 'http://')) or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
+    try:
+        host = urlsplit(url).hostname if isinstance(url, str) else None
+    except ValueError:
+        host = None
+    if (not isinstance(url, str) or not url.startswith(('https://', 'http://')) or not host
+            or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url)):
         errors.append(f'配置类型错误：{path}.base_url 必须是 http(s):// 开头、不含空白的地址')
     command = api.get('key_command')
     if (not isinstance(command, list) or not command or not all(isinstance(v, str) and v for v in command)

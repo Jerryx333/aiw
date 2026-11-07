@@ -107,6 +107,8 @@ def account_validation():
            ('codex', {'api': {'base_url': RELAY, 'key_command': ['/k'], 'api_key': secret}}),
            ('claude', {'api': {'base_url': RELAY, 'key_command': ['/k'], 'small_model': ''}}),
            ('codex', {'base_url': RELAY, 'key_command': ['/k']}), ('codex', {'api': secret}),
+           ('codex', {'api': {'base_url': 'https://[bad', 'key_command': ['/k']}}),
+           ('codex', {'api': {'base_url': 'https://', 'key_command': ['/k']}}),
            ('codex', {'codex_home': '/x', 'api': {}}), ('codex', 'codex-a'), ('codex', {})]
     for seat, account in bad:
         found = errors(seat, account)
@@ -177,6 +179,8 @@ def account_codex_home():
         root = Path(td)
         login = root / 'friend codex'
         env, pf, wd, _ = setup(root, {'codex': {'codex_home': str(login)}, 'codex-sol': {'codex_home': str(login)}})
+        r = dispatch(dict(env, CODEX_BIN=str(root / 'no-such-codex')), pf, wd, 'codex')
+        check(r.returncode == 1 and '登录目录不存在' in r.stderr, f'缺 CLI 时也应先报账号问题 {r.stderr}')
         # 目录不存在、没有 auth.json：本单失败，不启动、不回退共享登录、不顶替
         for state in ('missing', 'no_auth'):
             if state == 'no_auth':
@@ -226,6 +230,13 @@ def account_claude_relay():
         root = Path(td)
         account = lambda k: {'api': {'base_url': RELAY, 'key_command': [str(k), 'relay', "it's"], 'small_model': 'mini'}}
         env, pf, wd, keytool = setup(root, {'claude': account, 'claude-write': account})
+        local = json.loads(Path(env['AIW_CONFIG']).read_text())
+        argv = json.loads((REPO / 'seats.json').read_text())['seats']['claude-write']['argv_rw']
+        i = argv.index('--settings') + 1
+        argv[i] = argv[i].replace('{{\"sandbox\"', '{{\"env\":{{\"ANTHROPIC_BETAS\":\"old\",\"KEEP\":\"1\"}},\"sandbox\"')
+        check('ANTHROPIC_BETAS' in argv[i], '测试夹具没改到 settings')
+        local['seats']['claude-write']['argv_rw'] = argv
+        Path(env['AIW_CONFIG']).write_text(json.dumps(local))
         for seat, ro in (('claude', True), ('claude-write', False)):
             r = dispatch(env, pf, wd, seat, ro)
             rec = record(root)
@@ -247,8 +258,19 @@ def account_claude_relay():
                 check(settings['sandbox'] == {'enabled': True, 'allowUnsandboxedCommands': False, 'failIfUnavailable': True},
                       '原有 sandbox 设置丢失')
                 check(argv.index('--settings') < argv.index('--'), '--settings 应在 -- 之前')
+                check('ANTHROPIC_BETAS' not in senv and senv.get('KEEP') == '1', '原 settings 的 ANTHROPIC_* 没清掉或误删其它变量')
             no_key_anywhere(root, r.stdout, r.stderr)
             (root / 'record.json').unlink()
+
+
+def account_key_program_missing():
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        env, pf, wd, _ = setup(root, {'claude': {'api': {'base_url': RELAY, 'key_command': [str(root / 'nope')]}}})
+        r = dispatch(env, pf, wd, 'claude')
+        check(r.returncode == 1 and record(root) is None and '取密钥程序不存在或不可执行' in r.stderr, r.stderr)
+        breaker = root / 'state/breaker.json'
+        check(not breaker.exists() or 'claude' not in json.loads(breaker.read_text()), '取密钥程序缺失不应熔断')
 
 
 def account_doctor():
@@ -295,6 +317,7 @@ CASES = {case.__name__: case for case in (
     account_codex_home,
     account_codex_relay,
     account_claude_relay,
+    account_key_program_missing,
     account_doctor,
     account_absent_unchanged,
 )}

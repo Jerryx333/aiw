@@ -435,6 +435,7 @@ worker 只接受 `--ro --text --worktree --net --no-fallback --no-findings --all
 - `codex_home`（只用于 `adapter: "codex"`）：直接当这个座位的 `CODEX_HOME`，不生成 `state/codex-home`、不软链共享 `auth.json`；仍附加 `-c skills.include_instructions=false`。目录不存在或没有 `auth.json` 时本单失败（账本 kind=`account`，rc 1），说明原因，不回退共享登录、不熔断、不顶替。`AIW_CODEX_SHARED_HOME` 对它不起作用。
 - 中转（`api.base_url` + `api.key_command`，第一项必须是绝对路径）：Codex 座位用 `-c` 定义 provider `aiw`（`wire_api="responses"`，`auth.command`/`auth.args` 由 codex 自己取密钥），`CODEX_HOME` 用不含 `auth.json` 的 `state/codex-home-api/`；Claude 座位（`bin_env: CLAUDE_BIN` 或 bin 名为 `claude`）加 `--settings`：`apiKeyHelper` 取密钥，`ANTHROPIC_*` 和 Bedrock/Vertex/Foundry 开关置空、模型别名和子代理都指向座位 `model`（`small_model` 只给 Haiku/小模型；Codex 座位写了也忽略），关非必要流量；子进程环境里外面的 `ANTHROPIC_*` 也一并去掉。座位命令里已有 `--settings` JSON（如 `claude-write` 的沙箱）时合并进去，是文件路径时本单失败。
 - 本地新加的座位可写 `"base": "<seats.json 里的座位名>"`：先取 seats.json 里那个座位的完整定义，再叠加本地写的字段（如 `label`、`model`、`account`、`disabled`）。`base` 只用于 seats.json 里没有的座位名，指向不存在的座位时配置报错。
+- 账号检查在找 CLI 之前做：登录目录或 `auth.json` 缺失、取密钥程序不存在或不可执行时都按 kind=`account` 失败，不熔断、不顶替。账号能用但 CLI 自己报认证失败、额度用完等，照常按该座位配置的顶替链换座位，并提示「本单实际由 X 完成」。
 - 密钥只由执行方 CLI 运行取密钥命令拿到：aiw 不运行它，密钥不进环境变量、日志、运行目录和错误信息。`aiw doctor` 检查登录目录和 `auth.json` 是否在、取密钥程序是否存在且可执行（不运行它），只显示中转主机名。
 
 ## 主会话用 pi / omp

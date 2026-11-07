@@ -348,17 +348,32 @@ def claude_account_settings(api: dict, model: str) -> dict:
     return {"env": env, "apiKeyHelper": " ".join(shlex.quote(word) for word in api["key_command"])}
 
 
-def apply_account(seat: str, argv: list[str], env: dict) -> str | None:
-    """按座位 account 改写 argv / env；失败返回原因（只含路径和字段名，不含密钥）。"""
-    cfg = SEATS["seats"][seat]
-    account, agent = cfg["account"], seat_agent(cfg)
-    kind = account_kind(account)
-    if kind == "home":
+def account_unready(seat: str) -> str | None:
+    """启动前检查账号材料在不在；只看路径，不运行取密钥命令。"""
+    account = SEATS["seats"][seat]["account"]
+    if account_kind(account) == "home":
         home = Path(account["codex_home"]).expanduser()
         if not home.is_dir():
             return f"座位 {seat} 指定的 Codex 登录目录不存在：{home}；不回退共享登录"
         if not (home / "auth.json").is_file():
             return f"座位 {seat} 指定的 Codex 登录目录没有 auth.json：{home}；先在终端运行 CODEX_HOME={shlex.quote(str(home))} codex login；不回退共享登录"
+        return None
+    program = Path(account["api"]["key_command"][0]).expanduser()
+    if not program.is_file() or not os.access(program, os.X_OK):
+        return f"座位 {seat} 的取密钥程序不存在或不可执行：{program}"
+    return None
+
+
+def apply_account(seat: str, argv: list[str], env: dict) -> str | None:
+    """按座位 account 改写 argv / env；失败返回原因（只含路径和字段名，不含密钥）。"""
+    cfg = SEATS["seats"][seat]
+    account, agent = cfg["account"], seat_agent(cfg)
+    kind = account_kind(account)
+    reason = account_unready(seat)
+    if reason:
+        return reason
+    if kind == "home":
+        home = Path(account["codex_home"]).expanduser()
         env["CODEX_HOME"] = str(home)
         argv[2:2] = ["-c", "skills.include_instructions=false"]
         return None
@@ -400,6 +415,8 @@ def apply_account(seat: str, argv: list[str], env: dict) -> str | None:
     if not isinstance(existing, dict):
         return f"座位 {seat} 命令里的 --settings 不是 JSON 对象（可能是文件路径），无法叠加账号设置"
     existing_env = existing.get("env") if isinstance(existing.get("env"), dict) else {}
+    existing_env = {key: value for key, value in existing_env.items()
+                    if not key.startswith("ANTHROPIC_") and key not in CLAUDE_PROVIDER_SWITCHES}
     merged = json.dumps({**existing, **settings, "env": {**existing_env, **settings["env"]}}, ensure_ascii=False)
     if inline:
         argv[index] = "--settings=" + merged
@@ -2126,6 +2143,11 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
         if not ro and text_only_seat(seat):
             return {"rc": 64, "out": "", "err": "文本座位不能改文件", "kind": "invalid_argv", "secs": 0}
         return run_agent_use(seat, prompt, workdir, timeout, fixed_model, baseline_status, ro=ro, text=text)
+    if SEATS["seats"][seat].get("account") is not None:
+        # 账号问题先报，不让它变成 not_installed 熔断后顶替
+        reason = account_unready(seat)
+        if reason:
+            return {"rc": 1, "out": "", "err": reason, "kind": "account", "secs": 0}
     argv = build_argv(seat, prompt, workdir, ro, effort, net)
     if argv is None:
         return {"rc": 127, "out": "", "err": "binary not found", "kind": "not_installed", "secs": 0}
@@ -2187,7 +2209,10 @@ def account_doctor_line(account: dict) -> tuple[bool, str]:
         if not (home / "auth.json").is_file():
             return False, f"Codex 登录目录 {home} 没有 auth.json（先运行 CODEX_HOME={shlex.quote(str(home))} codex login）"
         return True, f"Codex 登录目录 {home}（有登录）"
-    host = urlsplit(account["api"]["base_url"]).hostname or "?"
+    try:
+        host = urlsplit(account["api"]["base_url"]).hostname or "?"
+    except ValueError:
+        host = "?"
     program = Path(account["api"]["key_command"][0]).expanduser()
     if not program.is_file():
         return False, f"中转 {host}；取密钥程序 {program} 不存在"
