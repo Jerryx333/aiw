@@ -317,7 +317,7 @@ def check_config(repo, include_local=True):
 
 def local_config(repo):
     """Inspect overrides without disclosing string leaf values; return failures."""
-    from seats_config import ConfigError, local_config_path, load_public, read_config, merge, validate
+    from seats_config import ConfigError, local_config_path, load_public, read_config, combine, validate
     print('\n本地配置')
     path = local_config_path()
     if path is None:
@@ -330,7 +330,7 @@ def local_config(repo):
     except ConfigError as error:
         print(f'  ✗ 本地配置解析失败：{error}')
         return 1
-    merged = merge(public, local)
+    merged = combine(public, local)
     errors = validate(merged)
     for error in errors:
         print(f'  ✗ {error}')

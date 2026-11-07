@@ -48,6 +48,7 @@ CASE_MODULES = (
     "tui",
     "select_cases",
     "structured_flow",
+    "seat_account",
 )
 CASES = {}
 MODULE_CASES = {}

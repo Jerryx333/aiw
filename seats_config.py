@@ -49,6 +49,81 @@ def merge(public, local):
     return copy.deepcopy(local)
 
 
+def seat_agent(seat):
+    """Which CLI an account applies to: 'codex', 'claude' or None."""
+    if not isinstance(seat, dict) or seat.get('kind') != 'cli':
+        return None
+    if seat.get('adapter') == 'codex':
+        return 'codex'
+    binary = seat.get('bin')
+    if seat.get('bin_env') == 'CLAUDE_BIN' or (isinstance(binary, str) and Path(binary).name == 'claude'):
+        return 'claude'
+    return None
+
+
+def account_kind(account):
+    """'home' for a Codex sign-in directory, 'api' for a relay; None if neither shape."""
+    if isinstance(account, dict) and len(account) == 1:
+        if 'codex_home' in account:
+            return 'home'
+        if isinstance(account.get('api'), dict):
+            return 'api'
+    return None
+
+
+def account_errors(seat, path):
+    """Seat account checks; messages name fields only, never their values."""
+    account, agent, path = seat['account'], seat_agent(seat), f'{path}.account'
+    kind = account_kind(account)
+    if kind is None:
+        return [f'{path} 必须是 {{"codex_home": 目录}} 或 {{"api": {{"base_url": 地址, "key_command": [命令, 参数...]}}}}']
+    errors = []
+    if kind == 'home':
+        home = account['codex_home']
+        if agent != 'codex':
+            errors.append(f'{path}.codex_home 只用于 Codex 座位（adapter: codex）')
+        if not isinstance(home, str) or not home.strip() or not Path(home).expanduser().is_absolute():
+            errors.append(f'配置类型错误：{path}.codex_home 必须是绝对路径（可用 ~ 开头）')
+        return errors
+    api, path = account['api'], f'{path}.api'
+    extra = set(api) - {'base_url', 'key_command', 'small_model'}
+    if extra:
+        errors.append(f'{path} 有未知字段：{"、".join(sorted(extra))}（只允许 base_url、key_command、small_model）')
+    if agent is None:
+        errors.append(f'{path} 中转账号只用于 Codex（adapter: codex）或 Claude 座位')
+    url = api.get('base_url')
+    if not isinstance(url, str) or not url.startswith(('https://', 'http://')) or any(c.isspace() or ord(c) < 32 or ord(c) == 127 for c in url):
+        errors.append(f'配置类型错误：{path}.base_url 必须是 http(s):// 开头、不含空白的地址')
+    command = api.get('key_command')
+    if (not isinstance(command, list) or not command or not all(isinstance(v, str) and v for v in command)
+            or not Path(command[0]).expanduser().is_absolute()):
+        errors.append(f'配置类型错误：{path}.key_command 必须是非空字符串数组，第一项是取密钥程序的绝对路径')
+    # small_model 只有 Claude 用；Codex 座位写了也忽略（同一个账号会生成两家的座位）
+    if 'small_model' in api and (not isinstance(api['small_model'], str) or not api['small_model'].strip()):
+        errors.append(f'配置类型错误：{path}.small_model 必须是非空字符串')
+    return errors
+
+
+def expand_bases(public, local):
+    """A seat new in the local file may say "base": "<seats.json seat>" to start from that definition."""
+    seats = local.get('seats') if isinstance(local, dict) else None
+    defaults = public.get('seats') if isinstance(public, dict) else None
+    if not isinstance(seats, dict) or not isinstance(defaults, dict):
+        return local
+    result = copy.deepcopy(local)
+    for name, seat in seats.items():
+        if isinstance(seat, dict) and 'base' in seat and name not in defaults:
+            base = seat['base']
+            if isinstance(base, str) and isinstance(defaults.get(base), dict):
+                result['seats'][name] = merge(defaults[base], {k: v for k, v in seat.items() if k != 'base'})
+    return result
+
+
+def combine(public, local):
+    """seats.json plus the local override, with local "base" seats expanded first."""
+    return merge(public, expand_bases(public, local))
+
+
 def validate(merged) -> list[str]:
     """Return all structural and seat-reference errors without mutating config."""
     if not isinstance(merged, dict):
@@ -159,7 +234,11 @@ def validate(merged) -> list[str]:
             errors.append(f'{path}.workspace 与 require_no_tools 不能同时为 true')
         if 'max_concurrency' in seat:
             concurrency(seat['max_concurrency'], f'{path}.max_concurrency')
-    roles = merged.get('roles', {})
+        if 'base' in seat:
+            errors.append(f'{path}.base 必须是 seats.json 里已有的座位名，且只用于本地新加的座位')
+        if seat.get('account') is not None:
+            errors.extend(account_errors(seat, path))
+    roles =merged.get('roles', {})
     if not isinstance(roles, dict):
         error('roles', '对象')
         roles = {}
@@ -243,7 +322,7 @@ def load_seats(repo=None, *, tolerate_public=False):
         if not tolerate_public:
             raise
         public = {}
-    merged = merge(public, local)
+    merged = combine(public, local)
     errors = validate(merged)
     if errors:
         raise ConfigError(f"{path or (Path(repo) if repo is not None else HERE) / 'seats.json'}: " + "; ".join(errors))

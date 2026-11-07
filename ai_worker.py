@@ -84,7 +84,7 @@ STATE = Path(getenv("AIW_STATE", HERE / "state"))
 LEDGER = STATE / "seat-ledger.jsonl"
 BREAKER = STATE / "breaker.json"
 DAILY = STATE / "daily-count.json"
-from seats_config import ConfigError, load_seats, load_public, forward_command, forward_runs_here
+from seats_config import ConfigError, load_seats, load_public, forward_command, forward_runs_here, account_kind, seat_agent
 try:
     SEATS = load_seats(HERE)
 except ConfigError as error:
@@ -319,6 +319,93 @@ def prepare_codex_home(*, dry_run: bool = False) -> tuple[Path | None, str]:
                 temporary.unlink(missing_ok=True)
             except OSError:
                 pass
+
+
+CLAUDE_PROVIDER_SWITCHES = ("CLAUDE_CODE_USE_BEDROCK", "CLAUDE_CODE_USE_VERTEX", "CLAUDE_CODE_USE_FOUNDRY")
+
+
+def prepare_api_codex_home() -> Path:
+    """中转账号的 Codex 用独立空 home：不放 auth.json，不读共享登录。"""
+    home = (STATE / "codex-home-api").resolve()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.chmod(0o700)
+    stray = home / "auth.json"
+    if stray.is_symlink() or stray.exists():
+        stray.unlink()
+    return home
+
+
+def claude_account_settings(api: dict, model: str) -> dict:
+    """照 pal claudeApiSettings：apiKeyHelper 取密钥，外面的 ANTHROPIC_* 置空，别名都指向座位模型。"""
+    small = api.get("small_model") or model
+    env = {"ANTHROPIC_BASE_URL": api["base_url"], "ANTHROPIC_API_KEY": "", "ANTHROPIC_AUTH_TOKEN": "",
+           "ANTHROPIC_CUSTOM_HEADERS": "", **{key: "" for key in CLAUDE_PROVIDER_SWITCHES},
+           "ANTHROPIC_MODEL": model, "ANTHROPIC_DEFAULT_OPUS_MODEL": model, "ANTHROPIC_DEFAULT_SONNET_MODEL": model,
+           "ANTHROPIC_DEFAULT_FABLE_MODEL": model, "ANTHROPIC_DEFAULT_HAIKU_MODEL": small,
+           "ANTHROPIC_SMALL_FAST_MODEL": small, "CLAUDE_CODE_SUBAGENT_MODEL": model,
+           # Claude Code 自己的上报和更新检查会绕过中转直连 Anthropic
+           "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1"}
+    return {"env": env, "apiKeyHelper": " ".join(shlex.quote(word) for word in api["key_command"])}
+
+
+def apply_account(seat: str, argv: list[str], env: dict) -> str | None:
+    """按座位 account 改写 argv / env；失败返回原因（只含路径和字段名，不含密钥）。"""
+    cfg = SEATS["seats"][seat]
+    account, agent = cfg["account"], seat_agent(cfg)
+    kind = account_kind(account)
+    if kind == "home":
+        home = Path(account["codex_home"]).expanduser()
+        if not home.is_dir():
+            return f"座位 {seat} 指定的 Codex 登录目录不存在：{home}；不回退共享登录"
+        if not (home / "auth.json").is_file():
+            return f"座位 {seat} 指定的 Codex 登录目录没有 auth.json：{home}；先在终端运行 CODEX_HOME={shlex.quote(str(home))} codex login；不回退共享登录"
+        env["CODEX_HOME"] = str(home)
+        argv[2:2] = ["-c", "skills.include_instructions=false"]
+        return None
+    api = account["api"]
+    command = [str(Path(api["key_command"][0]).expanduser()), *api["key_command"][1:]]
+    api = dict(api, key_command=command)
+    if agent == "codex":
+        try:
+            home = prepare_api_codex_home()
+        except OSError as error:
+            return f"座位 {seat} 准备中转账号的 Codex home 失败（{type(error).__name__}）"
+        env["CODEX_HOME"] = str(home)
+        # 照 pal codexApiConfig：codex 自己跑取密钥命令，密钥不进环境（codex 会把环境写进 shell 快照）
+        argv[2:2] = ["-c", "skills.include_instructions=false",
+                     "-c", 'model_provider="aiw"', "-c", 'model_providers.aiw.name="aiw"',
+                     "-c", "model_providers.aiw.base_url=" + toml_value(api["base_url"]),
+                     "-c", 'model_providers.aiw.wire_api="responses"',
+                     "-c", "model_providers.aiw.auth.command=" + toml_value(command[0]),
+                     "-c", "model_providers.aiw.auth.args=" + toml_value(command[1:])]
+        return None
+    for key in list(env):
+        if key.startswith("ANTHROPIC_") or key in CLAUDE_PROVIDER_SWITCHES:
+            del env[key]
+    settings = claude_account_settings(api, cfg.get("model") or "")
+    end = argv.index("--") if "--" in argv else len(argv)
+    found = [i for i in range(1, end) if argv[i] == "--settings" or argv[i].startswith("--settings=")]
+    if not found:
+        argv[1:1] = ["--settings", json.dumps(settings, ensure_ascii=False)]
+        return None
+    if len(found) > 1:
+        return f"座位 {seat} 的命令里有多个 --settings，无法叠加账号设置"
+    index = found[0]
+    inline = argv[index].startswith("--settings=")
+    raw = argv[index].partition("=")[2] if inline else (argv[index + 1] if index + 1 < end else "")
+    try:
+        existing = json.loads(raw)
+    except ValueError:
+        existing = None
+    if not isinstance(existing, dict):
+        return f"座位 {seat} 命令里的 --settings 不是 JSON 对象（可能是文件路径），无法叠加账号设置"
+    existing_env = existing.get("env") if isinstance(existing.get("env"), dict) else {}
+    merged = json.dumps({**existing, **settings, "env": {**existing_env, **settings["env"]}}, ensure_ascii=False)
+    if inline:
+        argv[index] = "--settings=" + merged
+    else:
+        argv[index + 1] = merged
+    return None
 
 
 def now() -> str:
@@ -2049,7 +2136,11 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
     if locked:
         return locked
     env = child_env()
-    if seat_adapter(seat) == "codex" and argv[1:2] == ["exec"] and os.environ.get("AIW_CODEX_SHARED_HOME") != "1":
+    if SEATS["seats"][seat].get("account") is not None:
+        reason = apply_account(seat, argv, env)
+        if reason:
+            return {"rc": 1, "out": "", "err": reason, "kind": "account", "secs": 0}
+    elif seat_adapter(seat) == "codex" and argv[1:2] == ["exec"] and os.environ.get("AIW_CODEX_SHARED_HOME") != "1":
         home, reason = prepare_codex_home()
         if home is not None:
             env["CODEX_HOME"] = str(home)
@@ -2084,6 +2175,25 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
     return {"rc": rc, "out": out, "err": err, "kind": "timeout" if timed_out else classify(rc, out, err), "output_saved": output_saved,
             "secs": secs, "run_dir": str(run_dir) if run_dir is not None else None,
             **({"token_fields": token_fields} if token_fields is not None else {})}
+
+
+def account_doctor_line(account: dict) -> tuple[bool, str]:
+    """doctor 只看目录和命令文件，不运行取密钥命令、不打印密钥或完整地址。"""
+    from urllib.parse import urlsplit
+    if account_kind(account) == "home":
+        home = Path(account["codex_home"]).expanduser()
+        if not home.is_dir():
+            return False, f"Codex 登录目录 {home} 不存在"
+        if not (home / "auth.json").is_file():
+            return False, f"Codex 登录目录 {home} 没有 auth.json（先运行 CODEX_HOME={shlex.quote(str(home))} codex login）"
+        return True, f"Codex 登录目录 {home}（有登录）"
+    host = urlsplit(account["api"]["base_url"]).hostname or "?"
+    program = Path(account["api"]["key_command"][0]).expanduser()
+    if not program.is_file():
+        return False, f"中转 {host}；取密钥程序 {program} 不存在"
+    if not os.access(program, os.X_OK):
+        return False, f"中转 {host}；取密钥程序 {program} 没有执行权限"
+    return True, f"中转 {host}；取密钥程序 {program.name} 可执行（未运行）"
 
 
 def doctor() -> int:
@@ -2187,6 +2297,10 @@ def _doctor() -> int:
         except (TypeError, ValueError) as e:
             ver = f"版本查询失败: {e.__class__.__name__}"
         print(f"  ✓ {name:11s} {path}  {ver}  model={cfg.get('model') or 'cli-default'} effort={cfg.get('effort', '-')}" + (f"  ⚠ 熔断: {br}" if br else "") + lock_hint)
+        if cfg.get("account") is not None:
+            ok, line = account_doctor_line(cfg["account"])
+            print(f"    {'✓' if ok else '✗'} 账号：{line}")
+            bad += 0 if ok else 1
     print("（只检查安装与版本；能不能真正调用请跑一单：aiw <seat> . 120 <prompt文件> --ro）")
     if not (agent_use_home() / 'scripts/run_agent.py').exists() and not any(
             isinstance(cfg, dict) and cfg.get('kind') == 'agent_use'
@@ -3086,6 +3200,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                 if r["kind"] == "incompatible_agent_use":
                     print(f"[{s}] {r['err']}；按顶替链换下一家（不熔断）", file=sys.stderr)
                     continue
+                if r["kind"] == "account":
+                    print(f"[{s}] 账号不可用：{r['err']}（不熔断、不顶替）", file=sys.stderr)
+                    return 1
                 if r["kind"] == "locked":
                     unlock_hint = (SEATS["seats"][s].get("preflight") or {}).get("unlock_hint") or "凭据库锁着：请在你自己的终端解锁所用的凭据工具（pinentry 需要 TTY，不能用 ! 前缀），解锁后重派"
                     print(f"[{s}] {unlock_hint}（不熔断、不顶替）", file=sys.stderr)
