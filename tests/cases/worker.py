@@ -662,6 +662,55 @@ def public_reason_vocabulary():
 
 
 
+def agent_use_context_overflow():
+    original = 'agent-use: pi failed (quota_exhausted): 413 Failed to buffer the request body: length limit exceeded'
+    hint = '会话上下文超长，请开新会话续跑，或减少读入的大文件/图片'
+    cases = [(original, 'quota_exhausted', 'context_overflow')]
+    cases += [(text, 'quota_exhausted', 'context_overflow') for text in (
+        'HTTP 413', 'length limit exceeded', 'Request Body Too Large',
+        'context length exceeded', 'maximum context exceeded', 'prompt is too long')]
+    cases += [('', 'context_overflow', 'context_overflow'),
+              ('HTTP 402 Payment Required', 'quota_exhausted', 'quota'),
+              ('insufficient balance', 'quota_exhausted', 'quota'),
+              ('HTTP 429 Too Many Requests', 'quota_exhausted', 'quota'),
+              ('HTTP 429 Too Many Requests', 'rate_limited', 'ratelimit')]
+    # 错误正文既可能在 stderr，也可能只在最后一个 attempt.detail。
+    for detail_only in (False, True):
+        for message, reason, kind in cases:
+            with tempfile.TemporaryDirectory() as td:
+                t = Path(td)
+                state = t / 'state'
+                prompt = t / 'prompt'; prompt.write_text('Reply OK')
+                local = t / 'seats.json'
+                write_legacy_local(local, {'seats': {'deepseek-flash': {
+                    'kind': 'agent_use', 'provider': 'pi', 'model': 'deepseek-flash'}},
+                    'fallback': {'deepseek-flash': ['workbuddy']}})
+                env = dict(os.environ, AIW_CONFIG=str(local), AIW_STATE=str(state),
+                           AGENT_USE_HOME=str(fake_agent_use(t)), FAKE_AU_PI=reason,
+                           FAKE_AU_ERR='' if detail_only else message,
+                           FAKE_ATTEMPT_FIELDS=json.dumps({'detail': message} if detail_only else {}),
+                           FAKE_AU_LOG=str(t / 'calls'))
+                args = [sys.executable, str(REPO / 'ai_worker.py'), 'deepseek-flash',
+                        str(t), '10', str(prompt), '--ro']
+                result = inprocess_sh(args, env=env)
+                rows = [json.loads(line) for line in (state / 'seat-ledger.jsonl').read_text().splitlines()]
+                check(rows[0]['kind'] == kind, str(rows))
+                breaker = state / 'breaker.json'
+                if kind == 'context_overflow':
+                    check(result.returncode == 1 and hint in result.stderr, result.stderr)
+                    check(hint in rows[0]['err_tail'], str(rows[0]))
+                    check(not breaker.exists(), '请求超限不应写熔断')
+                    check(len(rows) == 1, '请求超限不应自动改派')
+                    # 同座位的新派单应立即恢复，成功答复不扫描超限字样。
+                    retry = inprocess_sh(args, env=dict(env, FAKE_AU_PI='ok', FAKE_AU_ERR=original))
+                    check(retry.returncode == 0, retry.stderr)
+                    check(not breaker.exists(), '后续派单不应熔断')
+                else:
+                    check(result.returncode == 0, result.stderr)
+                    check(json.loads(breaker.read_text())['deepseek-flash']['reason'] == kind,
+                          '真正的额度/限流错误应照常熔断')
+
+
 def agent_use_transient():
     for reason, kind, no_fallback in (
             ("provider_failed", "transient", False),
@@ -1738,6 +1787,7 @@ CASES = {case.__name__: case for case in (
     provider_cleanup_not_work_change,
     adapter_reason_vocabulary,
     public_reason_vocabulary,
+    agent_use_context_overflow,
     agent_use_transient,
     page_adapter_reasons,
     worker_regression,

@@ -101,6 +101,10 @@ CAPACITY_PAT = re.compile(r"at capacity|overloaded", re.I)
 QUOTA_PAT = re.compile(r"(quota|insufficient_quota|usage limit|额度|用量已达|(?=[^\n]*\bcredits?\b)[^\n]*(?:limit|exceeded|insufficient|余额|balance is too low))", re.I)
 RATE_PAT = re.compile(r"(rate.?limit|429|too many requests|限流|请稍后)", re.I)
 FORMAT_PAT = re.compile(r"(validation_failed|JSONDecodeError)", re.I)
+CONTEXT_OVERFLOW_PAT = re.compile(
+    r"(?:HTTP|status|code)[ :=]*413\b|\b413\b[^\n]{0,40}(?:request|payload|body|entity|too large)|length limit exceeded|request body too large|context length|maximum context|prompt is too long",
+    re.I)
+CONTEXT_OVERFLOW_HINT = "会话上下文超长，请开新会话续跑，或减少读入的大文件/图片"
 
 
 def main_agent(env=None) -> str | None:
@@ -1348,6 +1352,7 @@ AGENT_USE_REASON = {
     "native_capability_missing": "fatal",
     # 来源：agent-use-private docs/DISPATCHER.md 的 pi/omp 私有适配器 reason。
     "pi_exit_nonzero": "transient",
+    "context_overflow": "context_overflow",
     "invalid_task": "format", "invalid_options": "format", "invalid_timeout": "format",
 }
 
@@ -1968,6 +1973,12 @@ def run_agent_use_files(cfg, script, task, out_dir, run_dir, workdir, timeout, r
                 "model": agent_use_response_model(att)}
     reason = next((a.get("reason") for a in reversed(attempts) if isinstance(a, dict) and a.get("reason")), None) or status.get("reason") or "unknown"
     kind = AGENT_USE_REASON.get(reason, "timeout" if p.returncode == 124 else "other")
+    # pi 可能把请求超限误标为 quota_exhausted；优先看失败诊断，不扫描 prompt 或回答。
+    detail = att.get("detail")
+    diagnostic = p.stderr + "\n" + (detail if isinstance(detail, str) else "")
+    if kind == "context_overflow" or CONTEXT_OVERFLOW_PAT.search(diagnostic):
+        return {**base, "out": "", "kind": "context_overflow", "reason": reason,
+                "err": f"agent-use reason={reason}\n{diagnostic}\n{CONTEXT_OVERFLOW_HINT}"}
     return {**base, "out": "", "kind": kind, "reason": reason, "unknown_reason": reason not in AGENT_USE_REASON and p.returncode != 124, "err": f"agent-use reason={reason}\n{p.stderr}"}
 
 
@@ -3220,6 +3231,10 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                 if r["kind"] == "invalid_argv":
                     print(f"[{s}] {r['err']}；拒绝执行", file=sys.stderr)
                     return 64
+                if r["kind"] == "context_overflow":
+                    print(f"[{s}] {CONTEXT_OVERFLOW_HINT}（不熔断、不自动改派）。", file=sys.stderr)
+                    print(r["err"][-800:], file=sys.stderr)
+                    return 1
                 if r["kind"] == "paid":
                     continue  # 永久停用已落盘，按不可用继续原顶替链
                 if r["kind"] == "incompatible_agent_use":
