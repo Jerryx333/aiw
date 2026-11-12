@@ -96,7 +96,7 @@ except ConfigError as error:
         raise SystemExit(1)
 
 LOCKED_PAT = re.compile(r"pinentry|provider auth command|vault is locked|agent not running|unlock required|^[\w./-]+: (?:vault (?:is )?)?locked\b", re.I | re.M)
-AUTH_PAT = re.compile(r"(authentication_required|not logged in|unauthorized|(?=[^\n]*\b401\b)[^\n]*(?:auth|unauthor|login|token)|login required|请先登录|未登录|invalid.*token|token.*expired)", re.I)
+AUTH_PAT = re.compile(r"(authentication_required|not logged in|unauthorized|(?=[^\n]*\b401\b)[^\n]*(?:auth|unauthor|login|token)|login required|failed to authenticate|oauth session expired|请先登录|未登录|invalid.*token|token.*expired)", re.I)
 CAPACITY_PAT = re.compile(r"at capacity|overloaded", re.I)
 QUOTA_PAT = re.compile(r"(quota|insufficient_quota|usage limit|额度|用量已达|(?=[^\n]*\bcredits?\b)[^\n]*(?:limit|exceeded|insufficient|余额|balance is too low))", re.I)
 RATE_PAT = re.compile(r"(rate.?limit|429|too many requests|限流|请稍后)", re.I)
@@ -756,7 +756,8 @@ def claude_tokens(session: str, config_dir: str | None = None) -> dict:
                 except ValueError:
                     continue
                 usage = message.get("usage") if isinstance(message, dict) else None
-                if not isinstance(usage, dict) or not message.get("id"):
+                # <synthetic> 是 claude 本地生成的报错（如登录失败），不是模型调用
+                if not isinstance(usage, dict) or not message.get("id") or message.get("model") == "<synthetic>":
                     continue
                 messages[message["id"]] = usage
         if not messages:

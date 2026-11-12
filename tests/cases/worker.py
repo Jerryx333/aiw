@@ -957,11 +957,16 @@ def worker_regression():
         check(row.get("tokens") is None and row.get("tokens_null_reason") == "transcript_missing", f"没有转录应记未知: {row}")
         # 同一条消息分块重复写的 usage 只算一次；input 含缓存（与 codex 同口径）
         usage = lambda mid, i, r, c, o: json.dumps({"message": {"id": mid, "usage": {"input_tokens": i, "cache_read_input_tokens": r, "cache_creation_input_tokens": c, "output_tokens": o}}})
-        lines = "\n".join([usage("m1", 3, 100, 10, 7), usage("m1", 3, 100, 10, 7), usage("m2", 2, 200, 0, 5), '{"type":"user"}'])
+        synthetic = json.dumps({"message": {"id": "s1", "model": "<synthetic>", "usage": {"input_tokens": 0, "output_tokens": 0}}})
+        lines = "\n".join([usage("m1", 3, 100, 10, 7), usage("m1", 3, 100, 10, 7), usage("m2", 2, 200, 0, 5), '{"type":"user"}', synthetic])
         p = run("claude", extra=(), FAKE_CLAUDE_USAGE=lines, CLAUDE_CONFIG_DIR=str(t / "claude-home"))
         row = json.loads(ledger_path.read_text().splitlines()[-1])
         check(p.returncode == 0 and row.get("tokens") == {"input": 315, "cached": 300, "cache_write": 10, "output": 12, "reasoning": 0, "calls": 2, "source": "rollout"},
               f"claude 用量不对: {row} {p.stderr}")
+        # 只有本地报错（登录失败等）没有模型调用：记未知，不记 0
+        p = run("claude", extra=(), FAKE_CLAUDE_USAGE=synthetic, CLAUDE_CONFIG_DIR=str(t / "claude-home"))
+        row = json.loads(ledger_path.read_text().splitlines()[-1])
+        check(row.get("tokens") is None and row.get("tokens_null_reason") == "transcript_unparsed", f"假消息不应记 0: {row}")
         # claude 未登录时错误写在 stdout：应识别为 auth（提示登录），不是「其它失败」
         p = run("claude", FAKE_CLAUDE_NOLOGIN="1")
         check(p.returncode == 1 and "login" in p.stderr and json.loads((t / "state" / "breaker.json").read_text())["claude"]["reason"] == "auth", f"claude 未登录应判 auth: {p.stderr}")
@@ -1367,7 +1372,7 @@ def nested_dispatch():
 def error_patterns():
     sys.path.insert(0, str(REPO))
     from ai_worker import classify
-    for text, kind in [('测试输出：expected 401 got 200', 'other'), ('Error: 401 Unauthorized', 'auth'),
+    for text, kind in [('测试输出：expected 401 got 200', 'other'), ('Error: 401 Unauthorized', 'auth'), ('Failed to authenticate: OAuth session expired and could not be refreshed', 'auth'),
                        ('cred-tool get: failed to read password from pinentry: pinentry error: Inappropriate ioctl for device', 'locked'),
                        ('Error: provider auth command cred-tool failed', 'locked'),
                        ('cred-tool unlocked: agent not running', 'locked'),
