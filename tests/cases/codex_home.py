@@ -258,7 +258,7 @@ def codex_adapter_alias():
             r = run(seat, flags); check(r.returncode == 0, r.stderr)
             record = row(); task = (Path(record['run_dir']) / 'task.txt').read_text()
             check(('派单里对规则' in task) == adapted, f'{seat} 提醒错误')
-            check(('tokens' in record) == adapted, f'{seat} token 字段错误: {record}')
+            check(('tokens' in record) == (adapted or seat == 'claude'), f'{seat} token 字段错误: {record}')
             if seat == 'claude':
                 continue
             argv = (root / 'args').read_text().splitlines()

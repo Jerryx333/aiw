@@ -722,6 +722,71 @@ def rollout_usage(tokens) -> dict | None:
     return {k: tokens[k] for k in (*keys, "source")}
 
 
+def agent_use_tokens(usage) -> dict:
+    """agent-use attempt 的 usage 换成账本 tokens（同 codex 口径：input 含缓存命中）。
+
+    "rollout" 指从本次运行自己的记录精确读到的分项，不只是 codex 的 rollout 文件；
+    转发回传和 Heya 都只认这一种。agent-use 口径（docs/DISPATCHER.md）：input_tokens
+    不含 cache_read_tokens，output_tokens 已含 thinking_tokens。缺输入或输出分项就记未知，不估算。
+    """
+    if not isinstance(usage, dict) or not usage:
+        return {"tokens": None, "tokens_null_reason": "not_reported"}
+    count = lambda k: usage.get(k) if type(usage.get(k)) is int and usage.get(k) >= 0 else None
+    fresh, cached, output = count("input_tokens"), count("cache_read_tokens") or 0, count("output_tokens")
+    if fresh is None or output is None:
+        return {"tokens": None, "tokens_null_reason": "no_breakdown"}
+    return {"tokens": {"input": fresh + cached, "cached": cached, "cache_write": 0, "output": output,
+                       "reasoning": count("thinking_tokens") or 0, "calls": 1, "source": "rollout"}}
+
+
+def claude_tokens(session: str, config_dir: str | None = None) -> dict:
+    """从 claude -p 本次会话的转录（按 --session-id 找）数 token；同一条消息分块重复记的只算一次。"""
+    try:
+        root = Path(config_dir or Path.home() / ".claude").expanduser()
+        paths = sorted((root / "projects").glob(f"*/{session}.jsonl"))
+        if not paths:
+            return {"tokens": None, "tokens_null_reason": "transcript_missing"}
+        messages = {}
+        with paths[0].open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                if '"usage"' not in line:
+                    continue
+                try:
+                    message = json.loads(line).get("message") or {}
+                except ValueError:
+                    continue
+                usage = message.get("usage") if isinstance(message, dict) else None
+                if not isinstance(usage, dict) or not message.get("id"):
+                    continue
+                messages[message["id"]] = usage
+        if not messages:
+            return {"tokens": None, "tokens_null_reason": "transcript_unparsed"}
+        n = lambda u, k: u.get(k) if type(u.get(k)) is int and u.get(k) >= 0 else 0
+        fresh = sum(n(u, "input_tokens") for u in messages.values())
+        cached = sum(n(u, "cache_read_input_tokens") for u in messages.values())
+        write = sum(n(u, "cache_creation_input_tokens") for u in messages.values())
+        return {"tokens": {"input": fresh + cached + write, "cached": cached, "cache_write": write,
+                           "output": sum(n(u, "output_tokens") for u in messages.values()),
+                           "reasoning": 0, "calls": len(messages), "source": "rollout"}}
+    except Exception:
+        return {"tokens": None, "tokens_null_reason": "error"}
+
+
+def run_tokens(seat: str, r: dict) -> dict:
+    """账本的用量字段；只是测量，读不到记 tokens_null_reason，不影响派单结果。"""
+    if r["kind"].startswith("skipped_"):
+        return {}
+    if r.get("token_fields"):
+        return r["token_fields"]
+    if SEATS["seats"][seat].get("kind") == "agent_use":
+        return agent_use_tokens(r.get("usage"))
+    if seat_adapter(seat) == "codex":
+        return codex_tokens(r["err"])
+    if r.get("claude_session"):
+        return claude_tokens(r["claude_session"], r.get("claude_config_dir"))
+    return {}
+
+
 def save_usage(run_dir, tokens) -> None:
     """在 run 目录留 usage.json，供转发命令把执行端用量带回发起方；失败只影响测量。"""
     usage = rollout_usage(tokens)
@@ -1952,7 +2017,7 @@ def run_agent_use_files(cfg, script, task, out_dir, run_dir, workdir, timeout, r
         return {**version_fields, "rc": 1, "out": "", "kind": "incompatible", "secs": secs,
                 "run_dir": str(run_dir) if run_dir is not None else None,
                 "err": f"agent-use 结果 protocol_version={version} 不兼容（期望 1），请对齐 agent-use 与 aiw 版本"}
-    base = {**version_fields, "stderr": p.stderr, "credits": att.get("credits"), "model": agent_use_response_model(att), "rc": p.returncode, "err": p.stderr, "secs": secs, "output_saved": output_saved, "run_dir": str(run_dir) if run_dir is not None else None}
+    base = {**version_fields, "stderr": p.stderr, "credits": att.get("credits"), "usage": att.get("usage"), "model": agent_use_response_model(att), "rc": p.returncode, "err": p.stderr, "secs": secs, "output_saved": output_saved, "run_dir": str(run_dir) if run_dir is not None else None}
     base.update({key: att.get(key) for key in ("selected_model", "actual_model", "requested_model")})
     for model_attempt in att.get("model_attempts") or []:
         if model_attempt.get("reason") in {"payment_required", "credits_exhausted", "not_free"}:
@@ -2162,6 +2227,11 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
     argv = build_argv(seat, prompt, workdir, ro, effort, net)
     if argv is None:
         return {"rc": 127, "out": "", "err": "binary not found", "kind": "not_installed", "secs": 0}
+    claude_session = None
+    if seat_agent(SEATS["seats"][seat]) == "claude":
+        # 指定会话编号，跑完按它找转录数 token（run_tokens）
+        claude_session = str(uuid.uuid4())
+        argv[1:1] = ["--session-id", claude_session]
     violation = readonly_argv_error(seat, argv, prompt) if ro else None
     if violation:
         return {"rc": 64, "out": "", "err": violation, "kind": "invalid_argv", "secs": 0}
@@ -2207,7 +2277,8 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
         err = err + "\n[stdout] " + out.strip()[-500:]
     return {"rc": rc, "out": out, "err": err, "kind": "timeout" if timed_out else classify(rc, out, err), "output_saved": output_saved,
             "secs": secs, "run_dir": str(run_dir) if run_dir is not None else None,
-            **({"token_fields": token_fields} if token_fields is not None else {})}
+            **({"token_fields": token_fields} if token_fields is not None else {}),
+            **({"claude_session": claude_session, "claude_config_dir": env.get("CLAUDE_CONFIG_DIR")} if claude_session else {})}
 
 
 def account_doctor_line(account: dict) -> tuple[bool, str]:
@@ -3189,8 +3260,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             finish_substitute(token, success)
                     if not ro and r['kind'] == 'ok' and r.get('run_dir'):
                         changes.save_evidence(r['run_dir'], source_root if worktree_fields else None)
-                    token_fields = ((r.get("token_fields") or codex_tokens(r["err"]))
-                                    if seat_adapter(s) == "codex" and not r["kind"].startswith("skipped_") else {})
+                    token_fields = run_tokens(s, r)
                     ledger({**text_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), **declared_fields(raw_output if r["kind"] in ("ok", "format") else None), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
                             "run_dir": r.get("run_dir"),
                             "kind": r["kind"], "rc": r["rc"], "secs": r["secs"], "substituted": s != seat,

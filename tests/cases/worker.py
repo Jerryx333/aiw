@@ -711,6 +711,31 @@ def agent_use_context_overflow():
                           '真正的额度/限流错误应照常熔断')
 
 
+def agent_use_usage():
+    """agent-use 回传的 usage 记进账本（input 含缓存命中）；没有分项记未知，不估算。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        state = t / 'state'
+        prompt = t / 'prompt'; prompt.write_text('Reply OK')
+        local = t / 'seats.json'
+        write_legacy_local(local, {'seats': {'flash': {'kind': 'agent_use', 'provider': 'pi', 'model': 'flash'}}})
+        env = dict(os.environ, AIW_CONFIG=str(local), AIW_STATE=str(state), AGENT_USE_HOME=str(fake_agent_use(t)))
+        args = [sys.executable, str(REPO / 'ai_worker.py'), 'flash', str(t), '10', str(prompt), '--ro', '--no-fallback']
+        for usage, tokens, reason in (
+                ({'input_tokens': 40, 'cache_read_tokens': 960, 'output_tokens': 30, 'thinking_tokens': 12},
+                 {'input': 1000, 'cached': 960, 'cache_write': 0, 'output': 30, 'reasoning': 12, 'calls': 1, 'source': 'rollout'}, None),
+                ({'input_tokens': 5, 'output_tokens': 2}, {'input': 5, 'cached': 0, 'cache_write': 0, 'output': 2, 'reasoning': 0, 'calls': 1, 'source': 'rollout'}, None),
+                ({'total_tokens': 100}, None, 'no_breakdown'),
+                ({}, None, 'not_reported'),
+                (None, None, 'not_reported')):
+            fields = {} if usage is None else {'usage': usage}
+            result = inprocess_sh(args, env=dict(env, FAKE_ATTEMPT_FIELDS=json.dumps(fields)))
+            row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+            check(result.returncode == 0 and row.get('tokens') == tokens and row.get('tokens_null_reason') == reason, (usage, row))
+            saved = Path(row['run_dir']) / 'usage.json'
+            check(saved.exists() == (tokens is not None), f'转发回传只留精确分项: {usage}')
+
+
 def agent_use_transient():
     for reason, kind, no_fallback in (
             ("provider_failed", "transient", False),
@@ -922,9 +947,21 @@ def worker_regression():
         # claude 座位：只读工具白名单，禁 Bash/Edit/Write
         cf = t / "claude.args"
         p = run("claude", extra=(), FAKE_CLAUDE_ARGS=str(cf)); a = cf.read_text().splitlines()
+        # 第一对是 --session-id：跑完按它找转录数 token
+        check(a[0] == "--session-id" and len(a[1]) == 36 and a[1].count("-") == 4, f"claude 应带会话编号: {a}")
+        a = a[2:]
         # --disallowedTools 吃多个值，prompt 前必须有 -- 分隔（2026-10-07 两机实测 prompt 被吞成禁用规则）
         check(p.returncode == 0 and prov() == "claude" and a[:5] == ["--model", "opus", "-p", "--output-format", "text"] and "Read,Grep,Glob" in a and any("Bash" in x and "Edit" in x for x in a) and a[9] == "--" and a[10].startswith("今天是 ") and a[11:] == ["", pf.read_text()],
               f"claude 座位参数不对: {a} {p.stderr}")
+        row = json.loads(ledger_path.read_text().splitlines()[-1])
+        check(row.get("tokens") is None and row.get("tokens_null_reason") == "transcript_missing", f"没有转录应记未知: {row}")
+        # 同一条消息分块重复写的 usage 只算一次；input 含缓存（与 codex 同口径）
+        usage = lambda mid, i, r, c, o: json.dumps({"message": {"id": mid, "usage": {"input_tokens": i, "cache_read_input_tokens": r, "cache_creation_input_tokens": c, "output_tokens": o}}})
+        lines = "\n".join([usage("m1", 3, 100, 10, 7), usage("m1", 3, 100, 10, 7), usage("m2", 2, 200, 0, 5), '{"type":"user"}'])
+        p = run("claude", extra=(), FAKE_CLAUDE_USAGE=lines, CLAUDE_CONFIG_DIR=str(t / "claude-home"))
+        row = json.loads(ledger_path.read_text().splitlines()[-1])
+        check(p.returncode == 0 and row.get("tokens") == {"input": 315, "cached": 300, "cache_write": 10, "output": 12, "reasoning": 0, "calls": 2, "source": "rollout"},
+              f"claude 用量不对: {row} {p.stderr}")
         # claude 未登录时错误写在 stdout：应识别为 auth（提示登录），不是「其它失败」
         p = run("claude", FAKE_CLAUDE_NOLOGIN="1")
         check(p.returncode == 1 and "login" in p.stderr and json.loads((t / "state" / "breaker.json").read_text())["claude"]["reason"] == "auth", f"claude 未登录应判 auth: {p.stderr}")
@@ -1788,6 +1825,7 @@ CASES = {case.__name__: case for case in (
     adapter_reason_vocabulary,
     public_reason_vocabulary,
     agent_use_context_overflow,
+    agent_use_usage,
     agent_use_transient,
     page_adapter_reasons,
     worker_regression,

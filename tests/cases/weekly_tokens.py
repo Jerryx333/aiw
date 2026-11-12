@@ -36,7 +36,8 @@ def codex_tokens_rollout():
             saved = json.loads((Path(row['run_dir']) / 'usage.json').read_text())
             check(saved == {'tokens': expected}, saved)
         result, row = token_worker(t, '', 'qoder')
-        check(result.returncode == 0 and 'tokens' not in row and 'tokens_null_reason' not in row, str(row))
+        # agent_use 座位没报 usage：记未知，不估算
+        check(result.returncode == 0 and row['tokens'] is None and row['tokens_null_reason'] == 'not_reported', str(row))
         check(not (Path(row['run_dir']) / 'usage.json').exists(), row)
         (t / 'state/disabled.json').write_text(json.dumps({'codex': {'reason': 'test'}}))
         result, row = token_worker(t, f'session id: {sid}\n')
