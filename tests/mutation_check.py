@@ -81,7 +81,7 @@ MUTATIONS = [{'id': 'transient-fallback',
   'expect': '文本座位写任务应拒绝',
   'invariant': '只出文本的座位不接写任务',
   'file': 'ai_worker.py',
-  'old': 'if not ro and text_only_seat(seat):\n            print(f"[{seat}] 这个座位只生成文本',
+  'old': 'if not ro and text_only_seat(seat) and explicit_chain is None:\n            print(f"[{seat}] 这个座位只生成文本',
   'new': 'if False:\n            print(f"[{seat}] 这个座位只生成文本',
   'tests': ['worker_regression'],
   'location': 'dispatch'},
@@ -271,6 +271,20 @@ MUTATIONS.extend([
      'invariant': '上游单钥匙进下游钥匙：上游说明改了，下游即使输入相同也重跑',
      'file': 'flow.py', 'old': '[p.key for p in parents]', 'new': '[]',
      'tests': ['flow_resume'], 'location': 'Scheduler.add'},
+])
+
+
+MUTATIONS.extend([
+    {'id': 'forward-resolved-chain', 'expect': '转发链不符合本机解析结果',
+     'invariant': '转发必须携带本机解析的完整链', 'file': 'ai_worker.py',
+     'old': "argv += ['--chain', ','.join(chain)]",
+     'new': "argv += ['--chain', chain[0]]",
+     'tests': ['forward_resolved_chain'], 'location': 'forward_dispatch'},
+    {'id': 'receiver-chain-boundary', 'expect': '显式链执行越界或顺序错误',
+     'invariant': '接收端不得展开自己的 fallback', 'file': 'ai_worker.py',
+     'old': '        chain = explicit',
+     'new': "        chain = [explicit[0]] + SEATS['fallback'].get(explicit[0], [])",
+     'tests': ['receiver_explicit_chain'], 'location': 'dispatch_chain'},
 ])
 
 

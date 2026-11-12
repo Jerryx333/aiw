@@ -65,6 +65,8 @@ panel 默认名单去掉主会话自身后过滤不可用座位，stderr 列原�
 | 结构化结果不合格的尝试在账本记 kind=format | `ai_worker.py:dispatch` | `structured_retry_then_ok` | `schema-format-ledger` |
 | 流水线续跑复用钥匙相同且已完成的单，不重派 | `flow.py:Scheduler.add` | `flow_resume` | `flow-reuse` |
 | 上游单钥匙进下游钥匙，上游说明改了下游必重跑 | `flow.py:Scheduler.add` | `flow_resume` | `flow-parent-key` |
+| 转发必须携带本机解析的完整链 | `ai_worker.py:forward_dispatch` | `forward_resolved_chain` | `forward-resolved-chain` |
+| 接收端不得展开自己的 fallback | `ai_worker.py:dispatch_chain` | `receiver_explicit_chain` | `receiver-chain-boundary` |
 
 跑腿只能点名 `aiw errand`，不进入文本座位和顶替链；嵌套执行方不得调用。提交前说明会花额度，账户及私人数据仅限用户同意的该单。提交、动作放行、回复提问必须由用户亲手点击 macOS 弹窗；禁止 System Events、辅助功能、脚本代点或改代码绕过。派单记录包含 job_id、state、task_url、credits_used。弹窗及额度逻辑由 agent-use 实现，本仓库离线测试只验证转发和隔离。
 

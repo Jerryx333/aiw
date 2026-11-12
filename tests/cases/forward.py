@@ -239,7 +239,7 @@ def forward_skips_disabled_seat():
         write_legacy_local(local, {'seats': {'qoder': {'disabled': True}}})
         r = sh(cmd, env=dict(env, AIW_CONFIG=str(local)))
         check(r.returncode == 2 and '已被配置停用' in r.stderr and not (t / 'called').exists() and 'qoder ok' not in r.stdout, r)
-        # 角色由执行端按它自己的配置选座位，照旧转发；启用后点名座位也照旧转发。
+        # 角色在本机跳过停用座位后转发；启用后点名座位也照旧转发。
         call = cmd[:]; call[2] = 'review'
         r = sh(call, env=dict(env, AIW_CONFIG=str(local)))
         check(r.returncode == 0 and (t / 'called').exists(), r)
@@ -303,4 +303,146 @@ def forward_stdin_prompt():
         check(snapshot['stdin_null'], '转发命令拿到了调用方的标准输入')
         check('FORWARD_STDIN_MARKER' in (run / 'task.txt').read_text(), 'task.txt 缺 prompt')
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt)}
+def chain_fixture(t):
+    cmd, env, wd, script = fixture(t)
+    cli = t / 'fakebin' / 'chain-cli'
+    cli.write_text('''#!/usr/bin/env python3
+import json, os, sys
+from pathlib import Path
+seat = sys.argv[1]
+with open(os.environ['CHAIN_LOG'], 'a') as log:
+    log.write(seat + '\\n')
+if seat in os.environ.get('CHAIN_FAIL', '').split(','):
+    print('at capacity', file=sys.stderr)
+    sys.exit(1)
+if os.environ.get('CHAIN_REPAIR'):
+    count = Path(os.environ['CHAIN_LOG']).read_text().splitlines().count(seat)
+    print('invalid result' if count == 1 else '<<<AIW-RESULT\\n{"ok":true}\\nAIW-RESULT>>>')
+else:
+    print(seat + ' ok')
+''')
+    cli.chmod(0o755)
+    config = {'seats': {name: {'kind': 'cli', 'bin': str(cli),
+                              'argv_ro': ['{bin}', name, '{prompt}'],
+                              'argv_rw': ['{bin}', name, '{prompt}']}
+                        for name in ('seat-a', 'seat-b', 'seat-c')},
+              'fallback': {'seat-a': ['seat-b', 'seat-a', 'seat-b']},
+              'roles': {'claude': {'write': ['seat-a'], 'review': ['seat-b'], 'draft': ['seat-b']}},
+              'findings': {'collect': False}}
+    config['seats']['seat-b']['ro_only'] = True
+    local = t / 'chain.json'
+    local.write_text(json.dumps(config))
+    env.update(AIW_CONFIG=str(local), HOME=str(t), AIW_STATE=str(t / 'state'), CHAIN_LOG=str(t / 'chain.log'))
+    cmd[2] = 'seat-a'
+    return cmd, env, local, config
+
+
+def forward_resolved_chain():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        config['fallback']['seat-b'] = ['seat-c', 'seat-b', 'seat-c']
+        local.write_text(json.dumps(config))
+        for name, flags, expected in (
+                ('seat-a', [], 'seat-a,seat-b'),
+                ('seat-a', ['--no-fallback'], 'seat-a'),
+                ('write', [], 'seat-a,seat-b'),
+                ('review', [], 'seat-b,seat-c'),
+                ('draft', [], 'seat-b,seat-c'),
+                ('draft', ['--no-fallback'], 'seat-b'),
+                ('review', ['--chain', 'seat-c,seat-a,seat-c'], 'seat-c,seat-a'),
+                ('review', ['--chain', 'seat-c,seat-a', '--no-fallback'], 'seat-c')):
+            call = cmd[:6]; call[2] = name
+            r = sh(call + flags, env=env)
+            check(r.returncode == 0, r)
+            argv = json.loads((t / 'called').read_text())['argv']
+            check(argv.count('--chain') == 1 and argv[argv.index('--chain') + 1] == expected,
+                  f'转发链不符合本机解析结果：{argv}')
+            if name in ('review', 'draft'):
+                check('--ro' in argv and ('--text' in argv) == (name == 'draft'), argv)
+        config['roles']['claude']['write'] = ['seat-a', 'seat-c']
+        config['seats']['seat-a']['disabled'] = True
+        local.write_text(json.dumps(config))
+        call = cmd[:6]; call[2] = 'write'
+        r = sh(call, env=env)
+        argv = json.loads((t / 'called').read_text())['argv']
+        check(r.returncode == 0 and argv[argv.index('--chain') + 1] == 'seat-c',
+              f'转发链不符合本机解析结果：{argv}; {r.stderr}')
+        del config['seats']['seat-a']['disabled']
+        local.write_text(json.dumps(config))
+        # rc=69 回到本机仍使用同一次解析的链。
+        r = sh(cmd, env=dict(env, FORWARD_RC='69', CHAIN_FAIL='seat-a'))
+        check(r.returncode == 0 and (t / 'chain.log').read_text().splitlines() == ['seat-a', 'seat-b'], r)
+
+
+def receiver_explicit_chain():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        env.update(AIW_NO_FORWARD='1', CHAIN_FAIL='seat-a')
+        config['fallback']['seat-a'] = ['seat-c']
+        config['roles']['claude']['review'] = ['seat-c']
+        local.write_text(json.dumps(config))
+        log = t / 'chain.log'
+
+        def run(chain, expected, rc=0, *, name='review', flags=('--ro',), extra=None):
+            log.unlink(missing_ok=True)
+            call = cmd[:6]; call[2] = name
+            r = sh(call + list(flags) + ['--chain', chain], env=dict(env, **(extra or {})))
+            actual = log.read_text().splitlines() if log.exists() else []
+            check(r.returncode == rc and actual == expected,
+                  f'显式链执行越界或顺序错误：{actual}; {r.stdout}{r.stderr}')
+            check(not (t / 'called').exists(), '接收端再次转发')
+            return r
+
+        run('seat-a,seat-a,seat-b,seat-b', ['seat-a', 'seat-b'])
+        r = run('seat-missing,seat-b', ['seat-b'])
+        check('[seat-missing] 顶替跳过：本机座位表中不存在' in r.stderr, r)
+        run('seat-missing', [], rc=1)
+        run('seat-a,seat-b', ['seat-a'], rc=1, flags=('--ro', '--no-fallback'))
+        run('seat-missing,seat-b', [], rc=1, flags=('--ro', '--no-fallback'))
+        for field in ('disabled', 'disabled_by_user'):
+            config['seats']['seat-a'][field] = True if field == 'disabled' else '测试停用'
+            local.write_text(json.dumps(config))
+            run('seat-a,seat-b', ['seat-b'])
+            del config['seats']['seat-a'][field]
+        local.write_text(json.dumps(config))
+        run('seat-a,seat-b', ['seat-b'], extra={'AIW_SKIP_SEATS': 'seat-a'})
+        config['seats']['seat-text'] = {'kind': 'agent_use', 'provider': 'seat-text'}
+        local.write_text(json.dumps(config))
+        run('seat-b,seat-text,seat-c', ['seat-c'], name='write', flags=())
+        run('seat-text,seat-b,seat-c', ['seat-c'], name='write', flags=())
+        state = Path(env['AIW_STATE'])
+        import datetime
+        import time
+        (state / 'breaker.json').write_text(json.dumps({'seat-a': {'until': time.time() + 3600, 'reason': 'auth'}}))
+        run('seat-a,seat-b', ['seat-b'])
+        config['substitute_limit'] = {'seat-b': 1}
+        local.write_text(json.dumps(config))
+        (state / 'daily-count.json').write_text(json.dumps({'date': datetime.date.today().isoformat(), 'counts': {'seat-b': 1}}))
+        run('seat-a,seat-b,seat-c', ['seat-c'])
+
+
+def chain_invalid_rejected():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        for flags in (['--chain'], ['--chain', ''], ['--chain', ',seat-a'], ['--chain', 'seat-a,'],
+                      ['--chain', 'seat-a,,seat-b'], ['--chain', 'seat-a, seat-b'],
+                      ['--chain', '../seat-a'], ['--chain', 'seat-a;exit'], ['--chain', '--ro'],
+                      ['--chain', 'seat-a\n'], ['--chain', 'seat-a', '--chain', 'seat-b']):
+            for forwarding in ('0', '1'):
+                r = sh(cmd + flags, env=dict(env, AIW_NO_FORWARD=forwarding))
+                check(r.returncode == 64 and '--chain' in r.stderr, r)
+                check(not (t / 'called').exists() and not (t / 'chain.log').exists(), '非法链仍执行')
+
+
+def chain_structured_retry():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        schema = t / 'schema.json'
+        schema.write_text(json.dumps({'type': 'object'}))
+        r = sh(cmd + ['--chain', 'seat-a,seat-b', '--schema', str(schema)],
+               env=dict(env, AIW_NO_FORWARD='1', CHAIN_FAIL='seat-a', CHAIN_REPAIR='1'))
+        check(r.returncode == 0 and (t / 'chain.log').read_text().splitlines() == ['seat-a', 'seat-b', 'seat-b'],
+              f'结构化重交没有钉在实际座位：{r.stdout}{r.stderr}')
+
+
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt, forward_resolved_chain, receiver_explicit_chain, chain_invalid_rejected, chain_structured_retry)}

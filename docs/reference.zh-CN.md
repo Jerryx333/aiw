@@ -6,13 +6,13 @@
 
 可选 `forward.runner_hosts` 指定执行端，例如 `{"forward": {"command": ["<命令>"], "runner_hosts": ["runner-host"]}}`。该字段必须是字符串数组，每个元素去空白后非空；允许空数组。比较时本机 `socket.gethostname()` 和配置值均取第一个 `.` 之前的短名并忽略大小写，配置值可写 FQDN（如 `runner-host.example.invalid`）。转发启用且名单非空时，仅名单内机器进行 freecheck；缺失或空数组保持原行为。`AIW_FORWARD` 只覆盖 command，不改变名单；command 为空或 `AIW_NO_FORWARD=1` 时仍在本机探测。该名单不限制普通派单转发，执行端仍可通过转发命令 rc=69 回退本机。doctor 对非执行端追加「本机非执行端，freecheck 跳过」，不显示名单内容。
 
-四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色名原样交给远端解析；显式座位先检查本机 `main_exclude`，再检查本机配置的停用（`disabled: true` 或 `disabled_by_user`）：停用的座位不转发，rc=2，不顶替（执行端看不到本机的停用）；允许远端独有、未列入本机 SEATS 的座位。转发时把本机配置停用的座位（`disabled: true` 或 `disabled_by_user`）和上游带来的 `AIW_SKIP_SEATS` 合在一起，用逗号连成 `AIW_SKIP_SEATS` 交给转发命令；执行端把其中的座位当作停用（点名拒绝，角色选择和顶替都跳过），所以按角色派单也不会选到发起端停用的座位。没有停用座位时不带这个变量。本机座位能力、角色候选、熔断和顶替配额不参与转发选择。
+四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色先按本机执行的相同规则解析，再构造顶替链；未指定 `--chain` 的点名座位先检查本机 `main_exclude`，再检查本机配置的停用（`disabled: true` 或 `disabled_by_user`）：停用的座位不转发，rc=2，不顶替（执行端看不到本机的停用）；允许远端独有、未列入本机 SEATS 的座位。转发时把本机配置停用的座位（`disabled: true` 或 `disabled_by_user`）和上游带来的 `AIW_SKIP_SEATS` 合在一起，用逗号连成 `AIW_SKIP_SEATS` 交给转发命令；执行端把其中的座位当作停用（带链执行时逐项跳过），所以按角色派单也不会选到发起端停用的座位。没有停用座位时不带这个变量。转发自动携带去重保序的 `--chain seat-a,seat-b,…`；接收端只按这条链尝试，不重解析角色或展开自己的 fallback，未知座位在 stderr 说明并跳过，停用、熔断、每日上限及写入能力检查仍生效。手写 `--chain` 的本地执行语义相同，与 `--no-fallback` 同用时只取链首；链为空或座位名含非法字符时返回 64，不执行。
 
 命令使用 argv 调用，不经过 shell：
 
 ```text
 command + [原始 role 或 seat, workdir 绝对路径, timeout, prompt 绝对路径,
-           透传开关..., --attach 附件绝对路径, ...]
+           --chain 本机候选链, 透传开关..., --attach 附件绝对路径, ...]
 ```
 
 透传 `--ro`、`--text`、`--net`、`--no-fallback`、`--no-findings`、`--effort <值>`；review 补 `--ro`，draft 补 `--text`（隐含只读）。附件沿用本机安全校验并转绝对路径。`--verify` 与 `--verify-timeout` 留在本机，不传给命令。stdout/stderr 直接继承，不捕获；SIGINT/SIGTERM 传递给命令。
@@ -21,9 +21,9 @@ command + [原始 role 或 seat, workdir 绝对路径, timeout, prompt 绝对路
 
 panel/map 子单追加 `--no-findings`，远端不收集观察记录。panel 保留 `--ro --no-fallback`，默认在本机 run 目录另写含 `PANEL_FORMAT` 的转发 prompt，原 prompt 快照不变，转发环境设 `AIW_PANEL_FORMAT=0` 避免执行端重复追加；`--full` 不追加格式。map 保留 `--ro --text` 和逐单附件。设置 `AIW_PROVIDER_FILE` 时，转发前删除旧文件，转发成功原子写入实际座位名与换行（取 `forward.json` 的 actual，否则请求名）；stdout/stderr 仍完整交给 panel/map 保存与汇总。
 
-转发开启时，panel 仍校验未知座位、跑腿供应商、main_exclude、默认名单的 self_seats，以及配置/用户停用和收费保护停用；跳过本机入口脚本/bin 安装和 auth/not_installed 熔断检查，由执行端判断。map 的角色名不在本机解析，按默认并发规则处理，不做角色对应座位的能力检查；rc=69 回退后由 worker 在本机解析角色。未开启转发时，选座行为保持原样。转发复用本机 inflight 生命周期，运行中发布请求座位、panel 分组及本机 run_dir，结束后清理。
+转发开启时，panel 仍校验未知座位、跑腿供应商、main_exclude、默认名单的 self_seats，以及配置/用户停用和收费保护停用；跳过本机入口脚本/bin 安装和 auth/not_installed 熔断检查，由执行端判断。map 自身不解析角色名，按默认并发规则处理，不做角色对应座位的能力检查；子单由 worker 在转发前按本机规则解析角色；rc=69 回退后沿用已构造的链。未开启转发时，选座行为保持原样。转发复用本机 inflight 生命周期，运行中发布请求座位、panel 分组及本机 run_dir，结束后清理。
 
-退出码 **69 必须表示不可达且尚未排队**，aiw 打印「[ai-worker] 转发不可用（rc=69），改在本机执行」，再完整执行原本机流程（含角色解析）。命令不存在、不可执行等启动 OSError 同样说明原因并回退。其他退出码是最终结果，不能用 69 表示已经排队或执行后的失败，以免重复执行。写单返回 0 且带 `--verify` 时，在本机 workdir 用现有验收逻辑执行，验收失败返回 4。
+退出码 **69 必须表示不可达且尚未排队**，aiw 打印「[ai-worker] 转发不可用（rc=69），改在本机执行」，再沿用已解析的链执行本机流程。命令不存在、不可执行等启动 OSError 同样说明原因并回退。其他退出码是最终结果，不能用 69 表示已经排队或执行后的失败，以免重复执行。写单返回 0 且带 `--verify` 时，在本机 workdir 用现有验收逻辑执行，验收失败返回 4。
 
 本机 run 目录保存 `task.txt`，命令可写 `output.md` 与 `forward.json`：`{"actual": "远端实际座位", "host": "远端展示名", "tokens": {…}}`。actual、host 均可缺失，只接受字符串；损坏或非对象 JSON 忽略。tokens 可缺失，须与本机账本的 rollout 用量同格式（`input/cached/cache_write/output/reasoning/calls` 非负整数加 `source: "rollout"`），合法时写进本机账本这一行，否则忽略。执行端 aiw 在 codex、claude 或 agent_use 尝试量到精确用量时会在该尝试的 run 目录（成功时「全文」所在目录，失败时「排查」指向的目录）写 `usage.json`：`{"tokens": {…}}`，转发命令可读它填 tokens。未提供 actual 时记原始角色或座位名。最终结果写本机账本并加 `executor: "forward"`、`forward_host`（可空），不写本机熔断、不计顶替配额、不做免费座位保护判定。`output_saved` 以 `output.md` 存在为准，正常成功时由 main 打印本机「全文」路径；评分与周报允许未知实际座位。账本字段详见 [状态契约](state-contract.md#seat-ledgerjsonl)。
 
@@ -386,7 +386,7 @@ Claude 派单钩子检查也识别已启用的 `aiw@…` 插件提供的 `UserPr
 
 会诊后填写目录中的 `adjudication.md`：每条关键意见标接受/驳回（理由或证据）/暂缓（写明等什么），不以多数票收敛。未提供 `--prior` 仅提醒，不改变退出码；文件读不到返回 64。
 
-worker 只接受 `--ro --text --worktree --net --no-fallback --no-findings --allow-nested --attach --effort --verify --verify-timeout`，panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
+worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`，panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
 
 `aiw write . 1200 task.txt --worktree`（点名写座位也可用）：只用于写任务，与 `--ro`、review/draft 或只读座位同用返回 64；workdir 必须在有 HEAD 提交的 Git 仓库内。
 从当前 HEAD 创建 `aiw/<run-id>` 分支及 `<STATE>/worktrees/<run-id>`（同名分支返回 64，不覆盖）；子目录映射到同一相对路径，写锁、顶替链、提示词、沙箱与改动统计均使用新目录。未提交改动不会带入，stderr 最多列 10 个文件。macOS 上建好后把源仓库里所有被 Git 忽略的文件和目录（`.env`、`node_modules`、构建缓存等，软链按软链本身）用 clonefile 写时复制到 worktree 同一位置，不用重装依赖、不占额外空间、改动不影响源目录；含 git worktree 的目录（如 aiw 自己的 `<STATE>`）不复制。复制失败（如跨盘）只提示，不影响派单。带 `--attach` 时先在原 workdir 按全部附件规则预检；附件未跟踪、已修改或已暂存（相对 HEAD 有任何差异）返回 64，提示先提交或去掉 `--worktree`，不创建 worktree、分支或元数据；通过后在 worktree 读取对应已提交文件。
