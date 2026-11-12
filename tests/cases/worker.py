@@ -736,6 +736,23 @@ def agent_use_usage():
             check(saved.exists() == (tokens is not None), f'转发回传只留精确分项: {usage}')
 
 
+def claude_transcript_usage():
+    """claude 转录连同子代理一起数；agent-use 的缓存写入分项照传。"""
+    sys.path.insert(0, str(REPO))
+    import ai_worker as w
+    line = lambda mid, i, o, r=0, c=0: json.dumps({"message": {"id": mid, "usage": {
+        "input_tokens": i, "output_tokens": o, "cache_read_input_tokens": r, "cache_creation_input_tokens": c}}})
+    with tempfile.TemporaryDirectory() as td:
+        project = Path(td) / "projects/p"
+        (project / "s/subagents").mkdir(parents=True)
+        (project / "s.jsonl").write_text(line("m1", 10, 2, 50, 5) + "\n")
+        (project / "s/subagents/agent-a.jsonl").write_text(line("a1", 100, 20) + "\n")
+        check(w.claude_tokens("s", td)["tokens"] == {"input": 165, "cached": 50, "cache_write": 5, "output": 22,
+                                                    "reasoning": 0, "calls": 2, "source": "rollout"}, "子代理用量应计入")
+    tokens = w.agent_use_tokens({"input_tokens": 10, "cache_read_tokens": 5, "cache_write_tokens": 7, "output_tokens": 2})["tokens"]
+    check(tokens["input"] == 15 and tokens["cache_write"] == 7, tokens)
+
+
 def agent_use_transient():
     for reason, kind, no_fallback in (
             ("provider_failed", "transient", False),
@@ -963,6 +980,10 @@ def worker_regression():
         row = json.loads(ledger_path.read_text().splitlines()[-1])
         check(p.returncode == 0 and row.get("tokens") == {"input": 315, "cached": 300, "cache_write": 10, "output": 12, "reasoning": 0, "calls": 2, "source": "rollout"},
               f"claude 用量不对: {row} {p.stderr}")
+        # 子代理转录一起算；有一条缺分项就整次未知
+        p = run("claude", extra=(), FAKE_CLAUDE_USAGE=json.dumps({"message": {"id": "e", "usage": {}}}), CLAUDE_CONFIG_DIR=str(t / "claude-home"))
+        row = json.loads(ledger_path.read_text().splitlines()[-1])
+        check(row.get("tokens") is None and row.get("tokens_null_reason") == "transcript_unparsed", f"缺分项不应记 0: {row}")
         # 只有本地报错（登录失败等）没有模型调用：记未知，不记 0
         p = run("claude", extra=(), FAKE_CLAUDE_USAGE=synthetic, CLAUDE_CONFIG_DIR=str(t / "claude-home"))
         row = json.loads(ledger_path.read_text().splitlines()[-1])
@@ -1831,6 +1852,7 @@ CASES = {case.__name__: case for case in (
     public_reason_vocabulary,
     agent_use_context_overflow,
     agent_use_usage,
+    claude_transcript_usage,
     agent_use_transient,
     page_adapter_reasons,
     worker_regression,

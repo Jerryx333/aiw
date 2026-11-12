@@ -735,31 +735,37 @@ def agent_use_tokens(usage) -> dict:
     fresh, cached, output = count("input_tokens"), count("cache_read_tokens") or 0, count("output_tokens")
     if fresh is None or output is None:
         return {"tokens": None, "tokens_null_reason": "no_breakdown"}
-    return {"tokens": {"input": fresh + cached, "cached": cached, "cache_write": 0, "output": output,
+    write = min(count("cache_write_tokens") or 0, fresh)
+    return {"tokens": {"input": fresh + cached, "cached": cached, "cache_write": write, "output": output,
                        "reasoning": count("thinking_tokens") or 0, "calls": 1, "source": "rollout"}}
 
 
 def claude_tokens(session: str, config_dir: str | None = None) -> dict:
-    """从 claude -p 本次会话的转录（按 --session-id 找）数 token；同一条消息分块重复记的只算一次。"""
+    """从 claude -p 本次会话的转录（按 --session-id 找，连同 <session>/subagents/ 下子代理的）数 token；
+    同一条消息分块重复记的只算一次；任一条缺输入或输出分项就整次未知。"""
     try:
         root = Path(config_dir or Path.home() / ".claude").expanduser()
         paths = sorted((root / "projects").glob(f"*/{session}.jsonl"))
         if not paths:
             return {"tokens": None, "tokens_null_reason": "transcript_missing"}
+        paths = [paths[0], *sorted(paths[0].with_suffix("").glob("subagents/*.jsonl"))]
         messages = {}
-        with paths[0].open(encoding="utf-8", errors="replace") as stream:
-            for line in stream:
-                if '"usage"' not in line:
-                    continue
-                try:
-                    message = json.loads(line).get("message") or {}
-                except ValueError:
-                    continue
-                usage = message.get("usage") if isinstance(message, dict) else None
-                # <synthetic> 是 claude 本地生成的报错（如登录失败），不是模型调用
-                if not isinstance(usage, dict) or not message.get("id") or message.get("model") == "<synthetic>":
-                    continue
-                messages[message["id"]] = usage
+        for path in paths:
+            with path.open(encoding="utf-8", errors="replace") as stream:
+                for line in stream:
+                    if '"usage"' not in line:
+                        continue
+                    try:
+                        message = json.loads(line).get("message") or {}
+                    except ValueError:
+                        continue
+                    usage = message.get("usage") if isinstance(message, dict) else None
+                    # <synthetic> 是 claude 本地生成的报错（如登录失败），不是模型调用
+                    if not isinstance(usage, dict) or not message.get("id") or message.get("model") == "<synthetic>":
+                        continue
+                    if not all(type(usage.get(k)) is int and usage[k] >= 0 for k in ("input_tokens", "output_tokens")):
+                        return {"tokens": None, "tokens_null_reason": "transcript_unparsed"}
+                    messages[message["id"]] = usage
         if not messages:
             return {"tokens": None, "tokens_null_reason": "transcript_unparsed"}
         n = lambda u, k: u.get(k) if type(u.get(k)) is int and u.get(k) >= 0 else 0
