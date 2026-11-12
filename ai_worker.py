@@ -5,7 +5,7 @@
     kind=cli        直接调用命令行（codex），可以写文件。
 
 用法：
-    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
+    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--chain seat-a,seat-b] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
         --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；macOS 上写时复制带上全部被忽略的文件（.env、node_modules 等）；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
         prompt_file 写 - 时从标准输入读 prompt，不用先建临时文件。
         --text 隐含 --ro；workspace 座位禁用工具；draft 自动启用。
@@ -219,16 +219,24 @@ def resolve_role(role, *, readonly=True):
 
 
 def runs_local_only(seat) -> bool:
-    """点名或按角色选中的座位带 local_only 时留在本机；角色按本机顺序取第一个可用座位，不打印跳过原因。"""
-    if seat in ('write', 'review', 'draft'):
-        try:
-            candidates = role_candidates(seat)
-        except RoleError:
-            return False
-        snapshot = selection_snapshot()
-        seat = next((s for s in candidates
-                     if not (role_candidate_reason(seat, s) or seat_unavailable(s, snapshot=snapshot))), None)
+    """链首座位带 local_only 时留在本机；调用前已完成角色解析。"""
     return bool(seat and SEATS['seats'].get(seat, {}).get('local_only'))
+
+
+def dispatch_chain(seat, flags, explicit=None):
+    """本机执行和转发共用：显式链不解析角色，也不展开本机顶替表。"""
+    role = seat if seat in ('write', 'review', 'draft') else None
+    if explicit is not None:
+        chain = explicit
+    else:
+        if role:
+            seat = resolve_role(role)
+            print(f"[ai-worker] 角色 {role} → 座位 {seat}", file=sys.stderr)
+        chain = [seat] + SEATS['fallback'].get(seat, [])
+    chain = list(dict.fromkeys(chain))
+    if '--no-fallback' in flags:
+        chain = chain[:1]
+    return chain[0], role, chain
 
 
 def child_env() -> dict:
@@ -2447,7 +2455,7 @@ class AttachError(ValueError):
 
 
 def split_argv(argv: list[str], allowed: set[str], *, values: dict | None = None) -> tuple[list[str], set[str], list[str]]:
-    """拆出位置参数、布尔开关、附件；可选 values 接收 --effort / --prior / 验收参数。"""
+    """拆出位置参数、布尔开关、附件；可选 values 接收 --chain / --effort / --prior / 验收参数。"""
     if values is None:
         values = {}
     args, flags, attach = [], set(), []
@@ -2465,6 +2473,13 @@ def split_argv(argv: list[str], allowed: set[str], *, values: dict | None = None
             if v not in {"low", "medium", "high"}:
                 raise AttachError("--effort 缺值或非法值；合法值：low、medium、high")
             values["effort"] = v
+        elif a == "--chain":
+            if "chain" in values:
+                raise AttachError("--chain 只能出现一次")
+            v = next(it, None)
+            if v is None or not all(re.fullmatch(r"[A-Za-z0-9][\w.-]*", name, re.ASCII) for name in v.split(',')):
+                raise AttachError("--chain 应为逗号分隔的非空座位名（字母或数字开头，仅字母、数字、点、下划线、连字符）")
+            values["chain"] = v.split(',')
         elif a == "--prior":
             if "prior" in values:
                 raise AttachError("--prior 只能出现一次")
@@ -2747,13 +2762,13 @@ def read_stdin_prompt():
 
 
 def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
-                     inflight=None, *, before_execute=None, prompt=None):
+                     inflight=None, *, chain, before_execute=None, prompt=None):
     role = seat if seat in ('write', 'review', 'draft') else None
-    if role is None and main_exclude_reason(seat):
+    if 'chain' not in values and role is None and main_exclude_reason(seat):
         print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
         return 64
     # 本机配置停用的点名座位不转发：执行端按它自己的配置判断，看不到这里的停用。
-    disabled = disabled_seat(seat) if role is None else None
+    disabled = disabled_seat(seat) if role is None and 'chain' not in values else None
     if disabled and (disabled.get("config_disabled") or disabled.get("disabled_by_user") or disabled.get("disabled_by_caller")):
         print_disabled(seat, disabled)
         return 2
@@ -2763,7 +2778,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     if role == 'draft':
         flags.add('--text')
     text = '--text' in flags
-    ro = text or '--ro' in flags or (role is None and SEATS['seats'].get(seat, {}).get('ro_only', False))
+    ro = text or '--ro' in flags
     if values.get('verify') and ro:
         print('[ai-worker] --verify 只用于写任务', file=sys.stderr)
         return 64
@@ -2795,6 +2810,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         prompt_file = str(run_dir / 'forward-prompt.md')
         Path(prompt_file).write_text(prompt, encoding='utf-8')
     argv = command + [seat, workdir, timeout_s, prompt_file]
+    argv += ['--chain', ','.join(chain)]
     argv += [flag for flag in ('--ro', '--text', '--net', '--no-fallback', '--no-findings') if flag in flags]
     if values.get('effort') is not None:
         argv += ['--effort', values['effort']]
@@ -2811,7 +2827,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     env.pop('AIW_SCHEMA_REPORT', None)
     if via != 'direct':
         env['AIW_FORWARD_GROUP'] = str(Path(os.environ[{'panel': 'AIW_PANEL_DIR', 'map': 'AIW_MAP_DIR', 'flow': 'AIW_FLOW_DIR'}[via]]).resolve())
-    # 执行端按它自己的配置选座位：把本机（和上游派单方）停用的座位一起带过去，按角色派单也不会选到。
+    # 执行端只尝试传入的链；本机和上游的停用状态也随请求传递。
     skipped = local_off_seats() | caller_skipped()
     env.pop('AIW_SKIP_SEATS', None)
     if skipped:
@@ -2942,14 +2958,14 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         return 0
     try:
         values = {}
-        args, flags, attach = split_argv(sys.argv[1:], {"--ro", "--text", "--worktree", "--net", "--no-fallback", "--no-findings", "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}, values=values)
+        args, flags, attach = split_argv(sys.argv[1:], {"--ro", "--text", "--worktree", "--net", "--no-fallback", "--chain", "--no-findings", "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}, values=values)
         effort = values.get("effort")
     except AttachError as e:
         print(f"[ai-worker] {e}", file=sys.stderr)
         return 64
     if args == ["doctor"] and not flags and not attach and not values:
         return doctor()
-    if len(args) == 2 and args[0] == "enable" and not flags and not attach and "verify" not in values and "verify_timeout" not in values:
+    if len(args) == 2 and args[0] == "enable" and not flags and not attach and "verify" not in values and "verify_timeout" not in values and "chain" not in values:
         return enable_seat(args[1])
     if os.environ.get("AIW_NESTED") == "1" and "--allow-nested" not in flags:
         print("已在被外包的会话里，不再嵌套派单", file=sys.stderr)
@@ -2958,6 +2974,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         print(__doc__, file=sys.stderr)
         return 64
     seat, workdir, timeout_s, prompt_file = args
+    requested_seat = seat
+    explicit_chain = values.get('chain')
     stdin_prompt = None
     if prompt_file == "-":
         try:
@@ -2978,15 +2996,29 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     except StateError as e:
         print(e, file=sys.stderr)
         return 64
-    if seat in errands:
+    if explicit_chain is None and seat in errands:
         print(f"[ai-worker] {seat} 是跑腿供应商，请改用 aiw errand", file=sys.stderr)
         return 64
-    invalid = errands.intersection(SEATS["fallback"]) | {
-        s for chain in SEATS["fallback"].values() for s in chain if s in errands
-    }
+    if explicit_chain is not None:
+        invalid = errands.intersection(explicit_chain)
+    else:
+        invalid = errands.intersection(SEATS["fallback"]) | {
+            s for chain in SEATS["fallback"].values() for s in chain if s in errands
+        }
     if invalid:
         print(f"[ai-worker] 顶替链配置错误：跑腿供应商 {sorted(invalid)} 只能用 aiw errand", file=sys.stderr)
         return 64
+    try:
+        seat, role, chain = dispatch_chain(seat, flags, explicit_chain)
+    except RoleError as exc:
+        print(f"[ai-worker] {exc}", file=sys.stderr)
+        return 2
+    if role in ('review', 'draft'):
+        flags.add('--ro')
+    if role == 'draft':
+        flags.add('--text')
+    if explicit_chain is None and SEATS['seats'].get(seat, {}).get('ro_only'):
+        flags.add('--ro')
     # local_only 座位依赖本机独有的服务（如账号池），不转发给执行机。
     if '--worktree' not in flags and not runs_local_only(seat):
         try:
@@ -2995,58 +3027,46 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
             print(f'[ai-worker] {exc}', file=sys.stderr)
             return 64
         if command:
-            rc = forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
-                                  inflight, before_execute=before_execute, prompt=stdin_prompt)
+            rc = forward_dispatch(command, requested_seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
+                                  inflight, chain=chain, before_execute=before_execute, prompt=stdin_prompt)
             if rc is not None:
                 return rc
-    role = None
-    if seat in ('write', 'review', 'draft'):
-        role = seat
-        try:
-            seat = resolve_role(role)
-        except RoleError as exc:
-            print(f"[ai-worker] {exc}", file=sys.stderr)
-            return 2
-        print(f"[ai-worker] 角色 {role} → 座位 {seat}", file=sys.stderr)
-        if role in ('review', 'draft'):
-            flags.add('--ro')
-        if role == 'draft':
-            flags.add('--text')
     if seat in errands:
         print(f"[ai-worker] {seat} 是跑腿供应商，请改用 aiw errand", file=sys.stderr)
         return 64
     excluded = main_exclude_reason(seat)
-    if excluded:
+    if excluded and explicit_chain is None:
         print(f"[ai-worker] {excluded}", file=sys.stderr)
         return 64
     reason = SEATS["seats"].get(seat, {}).get("disabled_by_user")
-    if reason:
+    if reason and explicit_chain is None:
         print_disabled(seat, {"disabled_by_user": reason})
         return 1
     text = "--text" in flags
     if text:
         flags.add("--ro")
     text_fields = {"text": True} if text else {}
-    ro = "--ro" in flags or SEATS["seats"].get(seat, {}).get("ro_only", False)
+    ro = "--ro" in flags
+    seat_cfg = SEATS['seats'].get(seat, {})
     text_fields.update(role=role, task_class="write" if not ro else "draft" if text else "review")
-    if seat not in SEATS["seats"]:
+    if seat not in SEATS["seats"] and explicit_chain is None:
         print(f"[ai-worker] 未知座位 {seat}；可用：{', '.join(SEATS['seats'])}", file=sys.stderr)
         return 64
-    if "--worktree" in flags and (ro or SEATS["seats"][seat].get("kind") == "agent_use"):
+    if "--worktree" in flags and (ro or seat_cfg.get("kind") == "agent_use"):
         print("[ai-worker] --worktree 只用于写任务", file=sys.stderr)
         return 64
     if verify and ro:
         print("[ai-worker] --verify 只用于写任务", file=sys.stderr)
         return 64
     net = "--net" in flags
-    if net and not text and agent_use_workspace(SEATS["seats"][seat]):
+    if net and not text and agent_use_workspace(seat_cfg):
         print(f"[ai-worker] {seat}：workspace 座位联网由供应商决定，--net 不生效", file=sys.stderr)
         net = False
-    if net and (ro or seat_adapter(seat) != "codex" or SEATS["seats"][seat].get("kind") == "agent_use"
-                or not codex_workspace_write(seat, ro)):
+    if net and (ro or (seat_cfg and (seat_adapter(seat) != "codex" or seat_cfg.get("kind") == "agent_use"
+                                   or not codex_workspace_write(seat, ro)))):
         print("[ai-worker] --net 只用于 codex 类座位的写单，不能与 --ro 或只读座位同用，也不能用于非 codex 座位", file=sys.stderr)
         return 64
-    if effort is not None and not supports_effort(seat):
+    if effort is not None and seat_cfg and not supports_effort(seat):
         print(f"[ai-worker] {seat}：该座位不支持 --effort", file=sys.stderr)
         return 64
     if not timeout_s.isdigit() or int(timeout_s) <= 0:
@@ -3089,11 +3109,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     prompt = auto_prompt_prefix(local_time) + prompt
     via = call_via()
     collect = (findings.config()["collect"] and via == "direct" and "--no-findings" not in flags
-               and not ((text_only_seat(seat) or (text and agent_use_workspace(SEATS["seats"][seat]))) and not attach))
+               and not ((text_only_seat(seat) or (text and agent_use_workspace(seat_cfg))) and not attach))
 
-    # 公开默认顶替链为空，本地配置可覆盖。
     attachments_warned = os.environ.get("AIW_ATTACH_WARNING_SUPPRESS") == "1"
-    chain = [seat] + ([] if "--no-fallback" in flags else SEATS["fallback"].get(seat, []))
     excluded = main_excluded()
     for candidate in chain:
         if candidate in excluded:
@@ -3122,7 +3140,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                 print(f"另一个座位正在写 {workdir}，要并行请各开一个 worktree", file=sys.stderr)
                 return 75
 
-        if not ro and text_only_seat(seat):
+        if not ro and text_only_seat(seat) and explicit_chain is None:
             print(f"[{seat}] 这个座位只生成文本、不能改文件。要它出结论请加 --ro；要改文件请用 `aiw write`。", file=sys.stderr)
             return 64
         if not ro and os.environ.get("AIW_NESTED") != "1":
@@ -3145,6 +3163,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
             outside_free_window = False
             promotion_expired = False
             for s in chain:
+                if s not in SEATS['seats']:
+                    print(f"[{s}] 顶替跳过：本机座位表中不存在", file=sys.stderr)
+                    continue
                 if not ro and SEATS["seats"][s].get("ro_only"):
                     print(f"[{s}] 顶替跳过：只读座位不能改文件", file=sys.stderr)
                     continue

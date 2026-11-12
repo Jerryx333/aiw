@@ -6,7 +6,7 @@
 
 支持 Claude Code、Codex、pi、omp 当主会话。
 
-在私有 `seats.local.json` 中设置 `forward.command`，即可通过自己的命令把普通派单转交另一台机器。命令返回 69 表示不可达、尚未排队，aiw 自动退回本机执行；其他结果直接返回。默认关闭，详见[派单转发协议](docs/reference.zh-CN.md#派单转发)。
+在私有 `seats.local.json` 中设置 `forward.command`，即可通过自己的命令把普通派单转交另一台机器。命令返回 69 表示不可达、尚未排队，aiw 自动退回本机执行；其他结果直接返回。转发前 aiw 先在本机解析角色，把去重后的候选顺序作为 `--chain seat-a,seat-b` 一起带过去；收方只在这条链里顶替，跳过不存在或不可用的座位，照常检查写权限，不再展开自己的顶替表。手写 `--chain` 在本机含义相同；配 `--no-fallback` 只用第一个，格式不对的链在执行前就被拒。默认关闭，详见[派单转发协议](docs/reference.zh-CN.md#派单转发)。
 
 下面这支 40 秒的介绍片用 [motion-use](https://github.com/leeguooooo/motion-use) 制作，片中终端里的每一行都来自一次真实派单的 aiw 输出。
 

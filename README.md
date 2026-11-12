@@ -6,7 +6,7 @@
 
 Works with Claude Code, Codex, pi and omp as the main session.
 
-Set `forward.command` in your private `seats.local.json` to send ordinary assignments to another machine through your own command. Exit code 69 means unreachable and not queued, so aiw runs the task locally; other results are final. Forwarding is off by default; see the [forwarding protocol](docs/reference.zh-CN.md#派单转发).
+Set `forward.command` in your private `seats.local.json` to send ordinary assignments to another machine through your own command. Exit code 69 means unreachable and not queued, so aiw runs the task locally; other results are final. Before forwarding, aiw resolves roles locally and sends the ordered, deduplicated candidates as `--chain seat-a,seat-b`; the receiver uses only that chain, skips unknown or unavailable seats, and applies its usual write-capability checks without expanding its own fallback table. An explicit `--chain` has the same meaning locally; `--no-fallback` limits it to the first seat, and malformed chains are rejected before execution. Forwarding is off by default; see the [forwarding protocol](docs/reference.zh-CN.md#派单转发).
 
 The 40-second tour below was made with [motion-use](https://github.com/leeguooooo/motion-use); every line in its terminal is real aiw output from one dispatched task.
 

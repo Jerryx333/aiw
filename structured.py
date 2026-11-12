@@ -34,7 +34,7 @@ TYPES = ("object", "array", "string", "integer", "number", "boolean", "null")
 SCHEMA_LIMIT = 256 * 1024
 RAW_EXCERPT = 6000
 # 带值的 ai_worker 开关：拆位置参数时要跳过它们的值。
-VALUE_FLAGS = {"--attach", "--effort", "--verify", "--verify-timeout", "--schema"}
+VALUE_FLAGS = {"--attach", "--chain", "--effort", "--verify", "--verify-timeout", "--schema"}
 
 
 class SchemaError(ValueError):
@@ -407,6 +407,8 @@ def run(argv: list[str]) -> int:
                 return 2
             print("[ai-worker] 结构化结果不合格，同座位重交一次：" + "；".join(errors[:5]), file=sys.stderr)
             actual = report.get("actual")
+            if actual and "--chain" in rest:
+                rest[rest.index("--chain") + 1] = actual
             if actual and actual != rest[seat_at]:
                 role = rest[seat_at]
                 rest[seat_at] = actual
