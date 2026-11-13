@@ -3090,6 +3090,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         flags.add('--ro')
     if mode == 'text':
         flags.add('--text')
+    if '--worktree' in flags and (mode != 'rw' or SEATS['seats'].get(seat, {}).get('kind') == 'agent_use'):
+        print('[ai-worker] --worktree 只用于写任务', file=sys.stderr)
+        return 64
     if mode == 'rw' and role is None and text_only_seat(seat) and explicit_chain is None:
         print(f"[{seat}] 这个座位只生成文本、不能改文件。要它出结论请加 --ro；要改文件请用 `aiw write`。", file=sys.stderr)
         return 64
@@ -3272,7 +3275,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                 actual_fields = dict(text_fields, task_class='draft' if actual_text else 'review' if actual_ro else 'write')
                 if actual_text:
                     actual_fields['text'] = True
-                actual_collect = collect and not ((text_only_seat(s) or (actual_text and agent_use_workspace(SEATS['seats'][s]))) and not attach)
+                actual_collect = collect  # Keep the primary's collection decision across the fallback chain.
                 effort_fields = {"effort": effort if effort is not None else SEATS["seats"][s].get("effort", "low")} if supports_effort(s) else {}
                 with deferred_signals():
                     success = False

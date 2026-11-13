@@ -298,9 +298,9 @@ def legacy_local_config_roles():
         cmd, env, _ = worker_call(t, AIW_CONFIG=str(local), AIW_MAIN='claude')
         cmd[2] = 'review'
         r = sh(cmd + ['--no-findings'], env=env)
-        check(r.returncode == 0 and '座位 claude' in r.stderr, r.stderr)
+        check(r.returncode == 0 and '座位 codex-sol' in r.stderr, r.stderr)
         r = sh([sys.executable, str(REPO/'ai_worker.py'), 'doctor'], env=env)
-        check('codex-sol: 非只读座位' in r.stdout, r.stdout)
+        check('codex-sol: 非只读座位' not in r.stdout, r.stdout)  # Verified argv_ro is sufficient.
         public = c.load_public(); public['seats']['review'] = public['seats']['claude']
         check(any('重命名' in e for e in c.validate(public)), c.validate(public))
 

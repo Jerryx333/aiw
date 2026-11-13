@@ -103,6 +103,7 @@ def python_requirement():
         fake.write_text('#!' + sys.executable + '\n' +
                         'import pathlib, sys\n' +
                         'with pathlib.Path(' + repr(str(calls)) + ').open("a") as log: log.write("call\\n")\n' +
+                        'if sys.argv[1] == "-I": sys.argv.pop(1)\n' +
                         'assert sys.argv[1] == "-c", "门禁后仍启动了子命令"\n' +
                         'code = sys.argv[2]\n' +
                         'sys.argv = ["-c", *sys.argv[3:]]\n' +
