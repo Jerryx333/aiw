@@ -3090,6 +3090,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         flags.add('--ro')
     if mode == 'text':
         flags.add('--text')
+    if mode == 'rw' and role is None and text_only_seat(seat) and explicit_chain is None:
+        print(f"[{seat}] 这个座位只生成文本、不能改文件。要它出结论请加 --ro；要改文件请用 `aiw write`。", file=sys.stderr)
+        return 64
     # The receiver may have different local rows. Never forward a write candidate
     # which this machine would skip because of its readonly ceiling.
     if mode == 'rw':
@@ -3218,9 +3221,6 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                 print(f"另一个座位正在写 {workdir}，要并行请各开一个 worktree", file=sys.stderr)
                 return 75
 
-        if not ro and text_only_seat(seat) and explicit_chain is None:
-            print(f"[{seat}] 这个座位只生成文本、不能改文件。要它出结论请加 --ro；要改文件请用 `aiw write`。", file=sys.stderr)
-            return 64
         if not ro and os.environ.get("AIW_NESTED") != "1":
             reserve_write_slot(stack, seat, workdir)
         provider_file = Path(os.environ["AIW_PROVIDER_FILE"]) if os.environ.get("AIW_PROVIDER_FILE") else None

@@ -851,3 +851,21 @@ def capability_query_isolated_and_argument_free():
         check(bad.returncode == 64 and not bad.stdout, bad)
 
 CASES['capability_query_isolated_and_argument_free'] = capability_query_isolated_and_argument_free
+
+
+def capability_query_does_not_write_bytecode():
+    import shutil
+    with tempfile.TemporaryDirectory() as t:
+        target = Path(t)
+        for name in ('bin', 'capabilities.py', 'seats_config.py'):
+            source = REPO / name
+            if source.is_dir():
+                shutil.copytree(source, target / name)
+            else:
+                shutil.copy2(source, target / name)
+        result = subprocess.run([str(target / 'bin/aiw'), 'capabilities'], capture_output=True, text=True,
+                                env=dict(os.environ, PYTHONDONTWRITEBYTECODE='1'))
+        check(result.returncode == 0, result.stderr)
+        check(not list(target.rglob('*.pyc')), '只读能力查询写入了 Python 字节码')
+
+CASES['capability_query_does_not_write_bytecode'] = capability_query_does_not_write_bytecode
