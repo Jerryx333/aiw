@@ -464,6 +464,22 @@ def forward_write_filters_local_readonly_backups():
         r = sh(cmd, env=env)
         check(r.returncode == 0, r.stderr)
         argv = json.loads((t / 'called').read_text())['argv']
-        check(argv[argv.index('--chain') + 1] == 'seat-a,seat-c', str(argv))
+        check(argv[argv.index('--chain') + 1] == 'seat-a,seat-c', '转发写单包含只读备用：' + str(argv))
 
 CASES['forward_write_filters_local_readonly_backups'] = forward_write_filters_local_readonly_backups
+
+
+def forward_write_filters_local_text_backups():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        config['seats']['seat-b'].pop('ro_only')
+        config['seats']['seat-b'].update(kind='agent_use', provider='example')
+        config['fallback']['seat-a'] = ['seat-b', 'seat-c']
+        local.write_text(json.dumps(config))
+        cmd.remove('--ro')
+        r = sh(cmd, env=env)
+        check(r.returncode == 0, r.stderr)
+        argv = json.loads((t / 'called').read_text())['argv']
+        check(argv[argv.index('--chain') + 1] == 'seat-a,seat-c', '转发写单包含文本备用：' + str(argv))
+
+CASES['forward_write_filters_local_text_backups'] = forward_write_filters_local_text_backups
