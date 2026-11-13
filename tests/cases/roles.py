@@ -62,11 +62,13 @@ def builtin_commands_match_dispatch():
     commands = {name for arm in re.findall(r'^  ([a-zA-Z0-9_|-]+)\)', source, re.M)
                 for name in arm.split('|')} - {'-h', '--help'}
     check(commands == BUILTIN_COMMANDS, str(commands ^ BUILTIN_COMMANDS))
+    from capabilities import capabilities
+    check(set(capabilities()['commands']) == commands, '能力声明与入口不同步')
 
 
 def role_name_conflict():
     import seats_config as c
-    for name in ('write', 'review', 'draft'):
+    for name in ('write', 'review', 'draft', *c.BUILTIN_COMMANDS):
         d = c.load_public(); d['seats'][name] = d['seats']['claude']
         check(any('冲突' in e for e in c.validate(d)), name)
     for name in c.BUILTIN_COMMANDS:

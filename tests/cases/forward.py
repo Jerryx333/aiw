@@ -422,6 +422,12 @@ def receiver_explicit_chain():
 
 
 def chain_invalid_rejected():
+    import ai_worker as worker
+    try:
+        worker.dispatch_chain('seat-a', {'--no-fallback'}, ['seat-b'])
+        check(False, '点名首项被显式链替换')
+    except worker.RoleError as error:
+        check('首项' in str(error), str(error))
     with tempfile.TemporaryDirectory() as td:
         t = Path(td); cmd, env, local, config = chain_fixture(t)
         for flags in (['--chain'], ['--chain', ''], ['--chain', ',seat-a'], ['--chain', 'seat-a,'],

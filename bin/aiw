@@ -55,8 +55,7 @@ fi
 case "$cmd" in
   capabilities)
     if [ "$#" -ne 1 ]; then echo 'capabilities 不接受其他参数' >&2; exit 64; fi
-    exec "$PY" -I -c 'import json; print(json.dumps({"capabilities": ["tool-templates-v1", "agent-runtime-v1"]}))'
-    ;;
+    shift; exec "$PY" -I "${H}/capabilities.py" "$@" ;;
   off|on|status) shift; exec "$PY" "${H}/dispatch.py" "$cmd" "$@" ;;
   rate) shift; exec "$PY" "${H}/rating.py" "$@" ;;
   note) shift; exec "$PY" "${H}/findings.py" note "$@" ;;

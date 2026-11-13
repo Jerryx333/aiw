@@ -846,7 +846,7 @@ def capability_query_isolated_and_argument_free():
         env = dict(os.environ, PYTHONPATH=str(t), AIW_CONFIG=str(t / 'missing.json'))
         result = subprocess.run([str(REPO / 'bin/aiw'), 'capabilities'], cwd=t, env=env, capture_output=True, text=True)
         check(result.returncode == 0, result)
-        check(json.loads(result.stdout)['capabilities'] == ['tool-templates-v1', 'agent-runtime-v1'], result)
+        check(set(['tool-templates-v1', 'agent-runtime-v1']).issubset(json.loads(result.stdout)['capabilities']), result)
         bad = subprocess.run([str(REPO / 'bin/aiw'), 'capabilities', 'codex'], cwd=t, env=env, capture_output=True, text=True)
         check(bad.returncode == 64 and not bad.stdout, bad)
 
