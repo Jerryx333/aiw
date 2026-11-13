@@ -227,6 +227,8 @@ def dispatch_chain(seat, flags, explicit=None):
     """本机执行和转发共用：显式链不解析角色，也不展开本机顶替表。"""
     role = seat if seat in ('write', 'review', 'draft') else None
     if explicit is not None:
+        if role is None and (not explicit or explicit[0] != seat):
+            raise RoleError('显式备用链首项必须与点名座位一致；没有执行')
         chain = explicit
     else:
         if role:
@@ -2974,6 +2976,10 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         print(__doc__, file=sys.stderr)
         return 64
     seat, workdir, timeout_s, prompt_file = args
+    from seats_config import BUILTIN_COMMANDS
+    if seat in BUILTIN_COMMANDS:
+        print('[ai-worker] 内置命令不能作为点名座位执行', file=sys.stderr)
+        return 64
     requested_seat = seat
     explicit_chain = values.get('chain')
     stdin_prompt = None

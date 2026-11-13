@@ -12,7 +12,7 @@ HERE = Path(__file__).resolve().parent
 ROLE_NAMES = frozenset(('write', 'review', 'draft'))
 BUILTIN_COMMANDS = frozenset(('rate', 'note', 'findings', 'triage', 'track', 'errand', 'freecheck',
     'enable', 'doctor', 'handoff', 'route', 'panel', 'map', 'flow', 'goal', 'board', 'statusline',
-    'tokens', 'weekly', 'snapshot', 'gc', 'sync', 'help', 'off', 'on', 'status', 'slot', 'tui', 'tui-status'))
+    'tokens', 'weekly', 'snapshot', 'gc', 'sync', 'help', 'off', 'on', 'status', 'slot', 'tui', 'tui-status', 'capabilities'))
 
 
 class ConfigError(Exception):
@@ -248,7 +248,7 @@ def validate(merged) -> list[str]:
     if not isinstance(roles, dict):
         error('roles', '对象')
         roles = {}
-    for name in ROLE_NAMES & seats.keys():
+    for name in (ROLE_NAMES | BUILTIN_COMMANDS) & seats.keys():
         errors.append(f'角色名冲突：{name} 不能用作座位名；请重命名座位并更新引用')
     for identity, mapping in roles.items():
         if not isinstance(mapping, dict):

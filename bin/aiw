@@ -53,6 +53,7 @@ if sys.version_info < (3, 11):
   exit 1
 fi
 case "$cmd" in
+  capabilities) shift; exec "$PY" "${H}/capabilities.py" "$@" ;;
   off|on|status) shift; exec "$PY" "${H}/dispatch.py" "$cmd" "$@" ;;
   rate) shift; exec "$PY" "${H}/rating.py" "$@" ;;
   note) shift; exec "$PY" "${H}/findings.py" note "$@" ;;
