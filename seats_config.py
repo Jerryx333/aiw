@@ -127,6 +127,14 @@ def expand_bases(public, local):
 
 def combine(public, local):
     """seats.json plus the local override, with local "base" seats expanded first."""
+    if isinstance(local.get('capabilities'), list) and 'agent-runtime-v1' in local['capabilities']:
+        contents = {k: v for k, v in local.items() if k != 'version'}
+        digest = hashlib.sha256(json.dumps(contents, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        if local.get('version') != digest:
+            raise ConfigError('Agent 运行表完整性校验失败')
+        if not isinstance(local.get('seats'), dict) or any(not isinstance(row, dict) or 'template' in row or 'base' in row for row in local['seats'].values()):
+            raise ConfigError('Agent 运行表必须包含完整展开的执行项')
+        return copy.deepcopy(local)
     return merge(public, expand_bases(public, local))
 
 

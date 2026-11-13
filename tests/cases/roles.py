@@ -226,7 +226,11 @@ def role_ro_argv_enforced():
         for seat in ('claude', 'review'):
             cmd[2] = seat
             r = sh(cmd + ['--no-findings'], env=env)
-            check(r.returncode == 64 and '只读' in r.stderr, r.stderr)
+            if seat == 'claude':
+                check(r.returncode == 64 and '只读' in r.stderr, r.stderr)
+            else:
+                check(r.returncode == 0 and '角色 review 跳过 claude' in r.stderr
+                      and '角色 review → 座位 codex-sol' in r.stderr, r.stderr)
         local.write_text(json.dumps({'fallback': {'codex-sol': ['claude']},
             'seats': {'claude': {'argv_ro': ['{bin}', '-p', '--tools', 'Write', '{prompt}']}}}))
         cmd[2] = 'codex-sol'

@@ -779,6 +779,25 @@ def tool_templates_expand_and_reject_unknown():
                 pass
 
 
+def generated_runtime_is_complete_and_integrity_checked():
+    import hashlib
+    import seats_config as c
+    public = c.load_public()
+    data = {'capabilities': ['agent-runtime-v1'], 'seats': {'example': public['seats']['codex']}, 'fallback': {'example': []}}
+    data['seats']['example']['label'] = '示例'
+    digest = hashlib.sha256(json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    local = {**data, 'version': digest}
+    merged = c.combine(public, local)
+    check(set(merged['seats']) == {'example'}, 'public seats leaked into runtime')
+    check(merged == local, 'runtime changed during combine')
+    local['seats']['example']['model'] = 'changed'
+    try:
+        c.combine(public, local)
+        check(False, 'damaged runtime accepted')
+    except c.ConfigError:
+        pass
+
+
 CASES = {case.__name__: case for case in (
     errand_registry_corrupt_rejected,
     errand_dispatch,
@@ -789,6 +808,7 @@ CASES = {case.__name__: case for case in (
     errand_worker_rejects,
     errand_freecheck_skips,
     tool_templates_expand_and_reject_unknown,
+    generated_runtime_is_complete_and_integrity_checked,
     local_config_contract,
     seat_execution_contract,
     config_structure_validation,

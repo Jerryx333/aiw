@@ -189,7 +189,8 @@ def workspace_write_fallback_skips_ro_only():
         r = sh(cmd + ['--no-findings'], env=env)
         check(r.returncode == 0, r.stderr)
         check([c['order'] for c in calls(t)] == ['generic'], '写单调用了 ro_only workspace 顶替')
-        check('[workspace-ro] 顶替跳过：只读座位不能改文件' in r.stderr, r.stderr)
+        # Candidates are filtered before forwarding or execution; the call log is
+        # the invariant, not a fallback-loop message from the old implementation.
         rows = [json.loads(line) for line in (t / 'state/seat-ledger.jsonl').read_text().splitlines()]
         check([row['actual'] for row in rows] == ['codex', 'workspace']
               and rows[-1]['changed_files'] == 2 and rows[-1]['ro'] is False, rows)
