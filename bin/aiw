@@ -43,7 +43,7 @@ PY="${AIW_PYTHON:-python3}"
 
 cmd="${1:-help}"
 # 所有子命令（含 shell 转发）共用一次解释器检查。
-if ! "$PY" -c 'import sys
+if ! "$PY" -I -c 'import sys
 if sys.version_info < (3, 11):
     message = "当前 Python " + sys.version.split()[0] + "，需要 Python 3.11 及以上；可用 AIW_PYTHON 指定解释器"
     if sys.argv[1] == "doctor":
@@ -53,6 +53,10 @@ if sys.version_info < (3, 11):
   exit 1
 fi
 case "$cmd" in
+  capabilities)
+    if [ "$#" -ne 1 ]; then echo 'capabilities 不接受其他参数' >&2; exit 64; fi
+    exec "$PY" -I -c 'import json; print(json.dumps({"capabilities": ["tool-templates-v1", "agent-runtime-v1"]}))'
+    ;;
   off|on|status) shift; exec "$PY" "${H}/dispatch.py" "$cmd" "$@" ;;
   rate) shift; exec "$PY" "${H}/rating.py" "$@" ;;
   note) shift; exec "$PY" "${H}/findings.py" note "$@" ;;

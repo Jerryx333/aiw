@@ -11,7 +11,7 @@ from urllib.parse import urlsplit
 HERE = Path(__file__).resolve().parent
 ROLE_NAMES = frozenset(('write', 'review', 'draft'))
 BUILTIN_COMMANDS = frozenset(('rate', 'note', 'findings', 'triage', 'track', 'errand', 'freecheck',
-    'enable', 'doctor', 'handoff', 'route', 'panel', 'map', 'flow', 'goal', 'board', 'statusline',
+    'enable', 'doctor', 'capabilities', 'handoff', 'route', 'panel', 'map', 'flow', 'goal', 'board', 'statusline',
     'tokens', 'weekly', 'snapshot', 'gc', 'sync', 'help', 'off', 'on', 'status', 'slot', 'tui', 'tui-status'))
 
 

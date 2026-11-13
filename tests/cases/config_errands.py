@@ -837,3 +837,17 @@ def shipped_tool_templates_validate_readonly_recipes():
             check(w.readonly_argv_error(name, argv, 'example') is None, name)
 
 CASES['shipped_tool_templates_validate_readonly_recipes'] = shipped_tool_templates_validate_readonly_recipes
+
+
+def capability_query_isolated_and_argument_free():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        (t / 'json.py').write_text("raise RuntimeError('cwd import must not execute')")
+        env = dict(os.environ, PYTHONPATH=str(t), AIW_CONFIG=str(t / 'missing.json'))
+        result = subprocess.run([str(REPO / 'bin/aiw'), 'capabilities'], cwd=t, env=env, capture_output=True, text=True)
+        check(result.returncode == 0, result)
+        check(json.loads(result.stdout)['capabilities'] == ['tool-templates-v1', 'agent-runtime-v1'], result)
+        bad = subprocess.run([str(REPO / 'bin/aiw'), 'capabilities', 'codex'], cwd=t, env=env, capture_output=True, text=True)
+        check(bad.returncode == 64 and not bad.stdout, bad)
+
+CASES['capability_query_isolated_and_argument_free'] = capability_query_isolated_and_argument_free

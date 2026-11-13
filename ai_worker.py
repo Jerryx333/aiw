@@ -87,6 +87,10 @@ DAILY = STATE / "daily-count.json"
 from seats_config import ConfigError, load_seats, load_public, forward_command, forward_runs_here, account_kind, seat_agent
 try:
     SEATS = load_seats(HERE)
+    if os.environ.get('AIW_EXPECT_CONFIG_HASH'):
+        from seats_config import effective_hash
+        if effective_hash(SEATS) != os.environ['AIW_EXPECT_CONFIG_HASH']:
+            raise ConfigError('Agent 转发核对后配置变化，未执行')
 except ConfigError as error:
     if __name__ == "__main__" and sys.argv[1:2] == ["doctor"]:
         # Diagnostics can still inspect public CLI installation after a broken override.
@@ -2796,6 +2800,21 @@ def read_stdin_prompt():
 
 def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
                      inflight=None, *, chain, before_execute=None, prompt=None):
+    agent_description = None
+    if any(SEATS['seats'].get(name, {}).get('local_only') for name in chain):
+        return None
+    if 'agent-runtime-v1' in SEATS.get('capabilities', []):
+        from agent_forward import describe, PROTOCOL
+        try:
+            proof = subprocess.run(command + ['capabilities'], capture_output=True, text=True, timeout=5)
+            if proof.returncode or PROTOCOL not in json.loads(proof.stdout).get('protocols', []):
+                raise ValueError('capability')
+            if values.get('effort') is not None and any(SEATS['seats'][name].get('effort', '') != values['effort'] for name in chain):
+                raise ValueError('effort-override')
+            agent_description = describe(SEATS, chain, 'text' if '--text' in flags else 'ro' if '--ro' in flags else 'rw', str(Path.home()))
+        except (ValueError, OSError, subprocess.TimeoutExpired, KeyError, TypeError, AttributeError):
+            print('[ai-worker] Agent 转发能力或身份核对失败，未执行', file=sys.stderr)
+            return 64
     role = seat if seat in ('write', 'review', 'draft') else None
     if 'chain' not in values and role is None and main_exclude_reason(seat):
         print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
@@ -2852,6 +2871,12 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     write_run_file(run_dir / 'task.txt', auto_prompt_prefix(dt.datetime.now().astimezone()) + prompt + render_attachments(files))
     env = dict(os.environ, AIW_NO_FORWARD='1', AIW_FORWARD_MODE='text' if text else 'ro' if ro else 'write',
                AIW_FORWARD_RUN_DIR=str(run_dir))
+    env.pop('AIW_FORWARD_AGENT_DESC', None)
+    if agent_description:
+        description_path = run_dir / 'agent-description.json'
+        description_path.write_text(json.dumps(agent_description))
+        description_path.chmod(0o600)
+        env['AIW_FORWARD_AGENT_DESC'] = str(description_path)
     if via == 'panel':
         env['AIW_PANEL_FORMAT'] = '0'  # 转发 prompt 已含格式，执行端不再追加。
     env.pop('AIW_FORWARD_GROUP', None)
@@ -2915,6 +2940,9 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     metadata = load_json(run_dir / 'forward.json', {}, strict=False)
     metadata = metadata if isinstance(metadata, dict) else {}
     actual = metadata.get('actual') if isinstance(metadata.get('actual'), str) else seat
+    if agent_description and rc == 0 and (metadata.get('actual') not in chain or not metadata.get('remote_actual')):
+        print('[ai-worker] Agent 转发回报身份不一致', file=sys.stderr)
+        rc = 64
     if rc == 0 and provider_file is not None:
         try:
             atomic_write_bytes(provider_file, (actual + '\n').encode('utf-8'))
