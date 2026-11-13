@@ -756,6 +756,29 @@ def malformed_contract_metadata():
 
 
 
+def tool_templates_expand_and_reject_unknown():
+    import seats_config as c
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        public = c.load_public()
+        (root / 'seats.json').write_text(json.dumps(public))
+        (root / 'tools.json').write_text(json.dumps({'version': 1, 'tools': {'coding': public['seats']['codex']}}))
+        local = root / 'local.json'
+        local.write_text(json.dumps({'seats': {'generated': {'template': 'coding', 'model': 'example-model', 'force_mode': 'ro'}}}))
+        with patch.dict(os.environ, {'AIW_CONFIG': str(local)}):
+            row = c.load_seats(root)['seats']['generated']
+            import doctor_config
+            check(doctor_config.local_config(root) == 0, 'doctor rejected template')
+            check(row['adapter'] == 'codex' and row['model'] == 'example-model' and row['force_mode'] == 'ro', str(row))
+            local.write_text(json.dumps({'seats': {'generated': {'template': 'missing'}}}))
+            try:
+                c.load_seats(root)
+                check(False, 'unknown template accepted')
+            except c.ConfigError:
+                pass
+
+
 CASES = {case.__name__: case for case in (
     errand_registry_corrupt_rejected,
     errand_dispatch,
@@ -765,6 +788,7 @@ CASES = {case.__name__: case for case in (
     errand_panel_rejects,
     errand_worker_rejects,
     errand_freecheck_skips,
+    tool_templates_expand_and_reject_unknown,
     local_config_contract,
     seat_execution_contract,
     config_structure_validation,
@@ -776,3 +800,20 @@ CASES = {case.__name__: case for case in (
     agent_use_versions,
     malformed_contract_metadata,
 )}
+
+def shipped_tool_templates_validate_readonly_recipes():
+    import seats_config as c
+    import ai_worker as w
+    from unittest.mock import patch
+    public = c.load_public()
+    rows = {name: {'template': name, **({'provider': 'example'} if name == 'agent-use' else {})}
+            for name in ('codex', 'claude-code', 'agent-use')}
+    expanded = c.expand_tools(c.combine(public, {'seats': rows}), REPO)
+    check(not c.validate(expanded), c.validate(expanded))
+    with patch.dict(w.SEATS['seats'], expanded['seats']):
+        for name in ('codex', 'claude-code'):
+            row = expanded['seats'][name]
+            argv = [a.format(bin=row['bin'], prompt='example', workdir='/example') for a in row['argv_ro']]
+            check(w.readonly_argv_error(name, argv, 'example') is None, name)
+
+CASES['shipped_tool_templates_validate_readonly_recipes'] = shipped_tool_templates_validate_readonly_recipes

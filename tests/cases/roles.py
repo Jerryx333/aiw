@@ -333,6 +333,28 @@ def role_preselect_readonly():
             check(snapshot.call_count == 1, snapshot.call_count)
 
 
+def explicit_chain_keeps_readonly_ceiling():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); marker = t / 'argv'
+        cmd, env, _ = worker_call(t, AIW_MAIN='claude', FAKE_CODEX_ARGS=str(marker))
+        cmd[2] = 'codex-sol'; cmd.remove('--ro')
+        r = sh(cmd + ['--chain', 'codex-sol', '--no-findings'], env=env)
+        check(r.returncode == 0 and marker.exists() and 'read-only' in marker.read_text(), r.stdout + r.stderr)
+
+
+def generated_force_mode_never_widens():
+    import ai_worker as w
+    from unittest.mock import patch
+    row = dict(w.SEATS['seats']['codex'], force_mode='ro')
+    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.object(w, '_run_seat', return_value={'rc': 0}) as run:
+        w.run_seat('generated', 'test', str(REPO), 10, False)
+        check(run.call_args.args[4] is True, str(run.call_args))
+    row['force_mode'] = 'text'
+    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.object(w, '_run_seat', return_value={'rc': 0}) as run:
+        w.run_seat('generated', 'test', str(REPO), 10, False)
+        check(run.call_args.args[4] is True and run.call_args.kwargs['text'] is True, str(run.call_args))
+
+
 CASES = {f.__name__: f for f in (role_resolve_matrix, role_write_skips_readonly, role_name_conflict, builtin_commands_match_dispatch, role_review_forces_ro,
     role_write_codex_main_refused, role_doctor_mapping, claude_write_argv, claude_model_opus,
     route_role_seats, panel_skips_unavailable, panel_single_family_hint, map_default_role, role_text_seat_write_hint, role_ro_argv_enforced, seat_disabled_everywhere, seat_skipped_by_caller,
@@ -448,3 +470,35 @@ def main_exclude_panel():
 
 CASES.update({f.__name__: f for f in (main_agent_priority, main_exclude_config,
                                    main_exclude_dispatch, main_exclude_panel)})
+
+CASES.update({f.__name__: f for f in (explicit_chain_keeps_readonly_ceiling, generated_force_mode_never_widens)})
+
+def role_accepts_verified_readonly_recipe_without_duplicate_seat():
+    import ai_worker as w
+    row = dict(w.SEATS['seats']['codex'], ro_only=False)
+    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.dict(os.environ, {'AIW_MAIN': 'unknown'}):
+        check(w.role_candidate_reason('review', 'generated') is None, 'read-only recipe rejected')
+        row['argv_ro'] = []
+        check(w.role_candidate_reason('review', 'generated') is not None, 'missing read-only recipe accepted')
+
+CASES['role_accepts_verified_readonly_recipe_without_duplicate_seat'] = role_accepts_verified_readonly_recipe_without_duplicate_seat
+
+def generated_unspecified_effort_does_not_emit_empty_cli_override():
+    import ai_worker as w
+    row = dict(w.SEATS['seats']['codex'], effort='', agent_pick='codex/example:model')
+    with patch.dict(w.SEATS['seats'], {'generated': row}):
+        argv = w.build_argv('generated', 'test', str(REPO), True)
+        check(not any('model_reasoning_effort=' in arg for arg in argv), str(argv))
+        argv = w.build_argv('generated', 'test', str(REPO), True, 'high')
+        check(any('model_reasoning_effort="high"' == arg for arg in argv), str(argv))
+
+CASES['generated_unspecified_effort_does_not_emit_empty_cli_override'] = generated_unspecified_effort_does_not_emit_empty_cli_override
+
+def review_role_rejects_writable_readonly_recipe():
+    import ai_worker as w
+    row = dict(w.SEATS['seats']['claude-write'], ro_only=False)
+    row['argv_ro'] = list(row['argv_rw'])
+    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.dict(os.environ, {'AIW_MAIN': 'unknown'}):
+        check(w.role_candidate_reason('review', 'generated') is not None, 'writable recipe accepted for review')
+
+CASES['review_role_rejects_writable_readonly_recipe'] = review_role_rejects_writable_readonly_recipe

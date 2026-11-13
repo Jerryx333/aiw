@@ -186,7 +186,7 @@ MUTATIONS = [{'id': 'transient-fallback',
 MUTATIONS.extend([
     {'id': 'write-fallback-ro-only', 'expect': '写单调用了 ro_only workspace 顶替',
      'invariant': '写单跳过只读 workspace 顶替', 'file': 'ai_worker.py',
-     'old': 'if not ro and SEATS["seats"][s].get("ro_only"):', 'new': 'if False:',
+     'old': 'if not ro and (SEATS["seats"][s].get("ro_only") or SEATS["seats"][s].get("force_mode") in ("ro", "text")):', 'new': 'if False:',
      'tests': ['workspace_write_fallback_skips_ro_only'], 'location': 'dispatch'},
     {'id': 'panel-mixed-workspace-scope', 'expect': 'panel 附件范围提示错误',
      'invariant': '混合名单保留附件范围提示', 'file': 'panel.py',

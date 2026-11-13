@@ -1,0 +1,88 @@
+{
+  "version": 1,
+  "capabilities": [
+    "tool-templates-v1"
+  ],
+  "tools": {
+    "codex": {
+      "kind": "cli",
+      "adapter": "codex",
+      "bin": "codex",
+      "bin_env": "CODEX_BIN",
+      "model_args": [
+        "-m",
+        "{model}",
+        "-c",
+        "model_reasoning_effort=\"{effort}\""
+      ],
+      "argv_rw": [
+        "{bin}",
+        "exec",
+        "--cd",
+        "{workdir}",
+        "--sandbox",
+        "workspace-write",
+        "--skip-git-repo-check",
+        "{prompt}"
+      ],
+      "argv_ro": [
+        "{bin}",
+        "exec",
+        "--cd",
+        "{workdir}",
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "{prompt}"
+      ],
+      "version_args": [
+        "--version"
+      ]
+    },
+    "claude-code": {
+      "kind": "cli",
+      "bin": "claude",
+      "bin_env": "CLAUDE_BIN",
+      "argv_rw": [
+        "{bin}",
+        "-p",
+        "--restricted",
+        "--strict-mcp-config",
+        "--tools",
+        "Read,Grep,Glob,Edit,Write,Bash",
+        "--permission-mode",
+        "acceptEdits",
+        "--permission-prompts",
+        "none",
+        "--settings",
+        "{{\"sandbox\":{{\"enabled\":true,\"allowUnsandboxedCommands\":false,\"failIfUnavailable\":true}}}}",
+        "--output-format",
+        "text",
+        "--",
+        "{prompt}"
+      ],
+      "argv_ro": [
+        "{bin}",
+        "-p",
+        "--output-format",
+        "text",
+        "--allowedTools",
+        "Read,Grep,Glob",
+        "--disallowedTools",
+        "Bash,Edit,Write,NotebookEdit,WebFetch,WebSearch",
+        "--",
+        "{prompt}"
+      ],
+      "version_args": [
+        "--version"
+      ],
+      "model_args": [
+        "--model",
+        "{model}"
+      ]
+    },
+    "agent-use": {
+      "kind": "agent_use"
+    }
+  }
+}

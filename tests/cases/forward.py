@@ -343,9 +343,9 @@ def forward_resolved_chain():
         config['fallback']['seat-b'] = ['seat-c', 'seat-b', 'seat-c']
         local.write_text(json.dumps(config))
         for name, flags, expected in (
-                ('seat-a', [], 'seat-a,seat-b'),
+                ('seat-a', [], 'seat-a'),
                 ('seat-a', ['--no-fallback'], 'seat-a'),
-                ('write', [], 'seat-a,seat-b'),
+                ('write', [], 'seat-a'),
                 ('review', [], 'seat-b,seat-c'),
                 ('draft', [], 'seat-b,seat-c'),
                 ('draft', ['--no-fallback'], 'seat-b'),
@@ -446,3 +446,18 @@ def chain_structured_retry():
 
 
 CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt, forward_resolved_chain, receiver_explicit_chain, chain_invalid_rejected, chain_structured_retry)}
+
+def forward_write_filters_local_readonly_backups():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        config['seats']['seat-b'].pop('ro_only')
+        config['seats']['seat-b']['force_mode'] = 'ro'
+        config['fallback']['seat-a'] = ['seat-b', 'seat-c']
+        local.write_text(json.dumps(config))
+        cmd.remove('--ro')
+        r = sh(cmd, env=env)
+        check(r.returncode == 0, r.stderr)
+        argv = json.loads((t / 'called').read_text())['argv']
+        check(argv[argv.index('--chain') + 1] == 'seat-a,seat-c', str(argv))
+
+CASES['forward_write_filters_local_readonly_backups'] = forward_write_filters_local_readonly_backups

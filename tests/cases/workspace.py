@@ -360,3 +360,20 @@ CASES = {fn.__name__: fn for fn in (workspace_role_write, workspace_access_ro_rw
     workspace_panel_all_workspace_attachment_scope, workspace_panel_text_attachment_scope,
     workspace_panel_map, workspace_findings_context, workspace_sync_core_failure,
     workspace_old_agent_use_fallback, workspace_capability_cache, workspace_findings_execution_mode)}
+
+def workspace_forced_text_backup_keeps_attachment_body():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd = fixture(t, FAKE_CODEX='quota')
+        local = Path(env['AIW_CONFIG']); cfg = json.loads(local.read_text())
+        cfg['seats']['workspace']['force_mode'] = 'text'
+        cfg['fallback']['codex'] = ['workspace']; local.write_text(json.dumps(cfg))
+        (wd / 'material.txt').write_text('UNIQUE_ATTACHMENT_CONTENT')
+        cmd[2] = 'codex'
+        r = sh(cmd + ['--attach', str(wd / 'material.txt'), '--no-findings'], env=env)
+        check(r.returncode == 0, r.stderr)
+        call = calls(t)[0]
+        check('UNIQUE_ATTACHMENT_CONTENT' in Path(call['argv'][0]).read_text(), Path(call['argv'][0]).read_text())
+        rows = [json.loads(line) for line in (t / 'state/seat-ledger.jsonl').read_text().splitlines()]
+        check(rows[-1].get('text') is True and rows[-1]['task_class'] == 'draft', rows[-1])
+
+CASES['workspace_forced_text_backup_keeps_attachment_body'] = workspace_forced_text_backup_keeps_attachment_body

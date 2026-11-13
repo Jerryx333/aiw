@@ -317,7 +317,7 @@ def check_config(repo, include_local=True):
 
 def local_config(repo):
     """Inspect overrides without disclosing string leaf values; return failures."""
-    from seats_config import ConfigError, local_config_path, load_public, read_config, combine, validate
+    from seats_config import ConfigError, local_config_path, load_public, read_config, combine, validate, expand_tools
     print('\n本地配置')
     path = local_config_path()
     if path is None:
@@ -330,7 +330,11 @@ def local_config(repo):
     except ConfigError as error:
         print(f'  ✗ 本地配置解析失败：{error}')
         return 1
-    merged = combine(public, local)
+    try:
+        merged = expand_tools(combine(public, local), repo)
+    except ConfigError as error:
+        print(f'  ✗ 工具模板解析失败：{error}')
+        return 1
     errors = validate(merged)
     for error in errors:
         print(f'  ✗ {error}')
@@ -344,7 +348,7 @@ def local_config(repo):
         print(f'  · 仅本地的座位：{new_seats}')
 
     seat_fields = {"disabled", "disabled_by_user", "max_concurrency", "kind", "provider", "model", "models",
-                   "free_guard", "free_only", "expects_credits", "require_no_tools", "tools_note", "adapter", "workspace"}
+                   "free_guard", "free_only", "expects_credits", "require_no_tools", "tools_note", "adapter", "workspace", "template", "force_mode", "agent_pick"}
     seat_fields.update(key for seat in public_seats.values() if isinstance(seat, dict) for key in seat)
 
     known_seats = merged.get('seats', {})

@@ -236,6 +236,8 @@ def validate(merged) -> list[str]:
                     'local_only'):
             if key in seat and type(seat[key]) is not bool:
                 error(f'{path}.{key}', '布尔值')
+        if 'force_mode' in seat and seat['force_mode'] not in ('rw', 'ro', 'text'):
+            error(f'{path}.force_mode', 'rw、ro 或 text')
         if seat.get('workspace') is True and seat.get('require_no_tools') is True:
             errors.append(f'{path}.workspace 与 require_no_tools 不能同时为 true')
         if 'max_concurrency' in seat:
@@ -318,6 +320,28 @@ def forward_runs_here(config, hostname=None) -> bool:
         host.strip().split('.', 1)[0].casefold() for host in hosts}
 
 
+def expand_tools(config, repo=None):
+    """Expand explicit templates only; old tables need no tools file."""
+    rows = config.get('seats', {})
+    if not isinstance(rows, dict) or not any(isinstance(row, dict) and 'template' in row for row in rows.values()):
+        return config
+    data = read_config((Path(repo) if repo is not None else HERE) / 'tools.json')
+    if type(data.get('version')) is not int or data['version'] != 1 or not isinstance(data.get('tools'), dict):
+        raise ConfigError('工具模板格式或版本无效')
+    result = copy.deepcopy(config)
+    for name, row in rows.items():
+        if not isinstance(row, dict) or 'template' not in row:
+            continue
+        template = row['template']
+        if not isinstance(template, str) or not isinstance(data['tools'].get(template), dict):
+            raise ConfigError('座位引用了未知工具模板')
+        definition = data['tools'][template]
+        if 'template' in definition or 'base' in definition:
+            raise ConfigError('工具模板不能引用另一个模板或座位')
+        result['seats'][name] = merge(definition, {k: v for k, v in row.items() if k != 'template'})
+    return result
+
+
 def load_seats(repo=None, *, tolerate_public=False):
     # Read the override first: a broken public file must not hide local errors.
     path = local_config_path()
@@ -328,7 +352,7 @@ def load_seats(repo=None, *, tolerate_public=False):
         if not tolerate_public:
             raise
         public = {}
-    merged = combine(public, local)
+    merged = expand_tools(combine(public, local), repo)
     errors = validate(merged)
     if errors:
         raise ConfigError(f"{path or (Path(repo) if repo is not None else HERE) / 'seats.json'}: " + "; ".join(errors))

@@ -149,15 +149,33 @@ def text_only_seat(seat):
     return cfg.get("kind") == "agent_use" and not agent_use_workspace(cfg)
 
 
+def effective_mode(role, seat_cfg, cli_flags):
+    """All independently supplied ceilings may tighten, never loosen access."""
+    modes = ['rw', 'ro', 'text']
+    requested = 'text' if '--text' in cli_flags or role == 'draft' else 'ro' if '--ro' in cli_flags or role == 'review' else 'rw'
+    forced = seat_cfg.get('force_mode', 'rw')
+    if forced not in modes:
+        raise RoleError('未知执行权限上限')
+    return modes[max(modes.index(requested), modes.index(forced), 1 if seat_cfg.get('ro_only') else 0)]
+
+
 def role_candidate_reason(role, seat):
     excluded = main_exclude_reason(seat)
     if excluded:
         return excluded
     cfg = SEATS["seats"].get(seat, {})
-    if role == "write" and (cfg.get("ro_only") or text_only_seat(seat)):
+    if role == "write" and (cfg.get("ro_only") or cfg.get("force_mode") in ("ro", "text") or text_only_seat(seat)):
         return "只读或文本座位，不能写"
-    if role in ("review", "draft") and cfg.get("kind") != "agent_use" and not cfg.get("ro_only"):
-        return "非只读座位"
+    if role in ("review", "draft") and cfg.get("kind") != "agent_use":
+        if not cfg.get("argv_ro"):
+            return "缺少只读执行方式"
+        try:
+            argv = [arg.format(bin=cfg['bin'], prompt='inspection', workdir='/inspection') for arg in cfg['argv_ro']]
+        except (KeyError, ValueError, TypeError):
+            return "只读执行方式无效"
+        reason = readonly_argv_error(seat, argv, 'inspection')
+        if reason:
+            return reason
     return None
 
 
@@ -2140,7 +2158,20 @@ def build_argv(seat: str, prompt: str, workdir: str, ro: bool, effort: str | Non
     if cfg.get("model"):
         # 插在子命令之后（codex exec -m ... -c ...），调用方可临时覆盖推理强度
         pos = 2 if len(argv) > 1 and argv[1] == "exec" else 1
-        argv[pos:pos] = [a.format(model=cfg["model"], effort=effort if effort is not None else cfg.get("effort", "low")) for a in cfg["model_args"]]
+        model_args = list(cfg["model_args"])
+        selected_effort = effort if effort is not None else cfg.get("effort", "low")
+        if cfg.get('agent_pick') and selected_effort == '':
+            # A generated unspecified-effort recipe means the CLI's default.
+            # Remove the option paired with its value, not just the value.
+            kept = []
+            for arg in model_args:
+                if '{effort}' in arg:
+                    if kept and kept[-1] in ('-c', '--config', '--effort'):
+                        kept.pop()
+                    continue
+                kept.append(arg)
+            model_args = kept
+        argv[pos:pos] = [a.format(model=cfg["model"], effort=selected_effort) for a in model_args]
     return argv
 
 
@@ -2171,6 +2202,8 @@ def preflight(cfg: dict) -> dict | None:
 
 def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = False, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False) -> dict:
     global PENDING_SIGNAL
+    mode = effective_mode(None, SEATS['seats'][seat], ({'--ro'} if ro else set()) | ({'--text'} if text else set()))
+    ro, text = mode != 'rw', text or mode == 'text'
     t0 = time.time()
     context = {"out": "", "err": "", "archived": False, "output_saved": False}
     try:
@@ -3017,8 +3050,19 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         flags.add('--ro')
     if role == 'draft':
         flags.add('--text')
-    if explicit_chain is None and SEATS['seats'].get(seat, {}).get('ro_only'):
+    # A write role may skip a read-only chain head; a directly named alias keeps its ceiling.
+    mode = effective_mode(role, {} if role == 'write' else SEATS['seats'].get(seat, {}), flags)
+    if mode != 'rw':
         flags.add('--ro')
+    if mode == 'text':
+        flags.add('--text')
+    # The receiver may have different local rows. Never forward a write candidate
+    # which this machine would skip because of its readonly ceiling.
+    if mode == 'rw':
+        chain = [name for name in chain if effective_mode(None, SEATS['seats'].get(name, {}), set()) == 'rw' and not text_only_seat(name)]
+        if not chain:
+            print('[ai-worker] 全链没有可写执行方', file=sys.stderr)
+            return 1
     # local_only 座位依赖本机独有的服务（如账号池），不转发给执行机。
     if '--worktree' not in flags and not runs_local_only(seat):
         try:
@@ -3166,7 +3210,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                 if s not in SEATS['seats']:
                     print(f"[{s}] 顶替跳过：本机座位表中不存在", file=sys.stderr)
                     continue
-                if not ro and SEATS["seats"][s].get("ro_only"):
+                if not ro and (SEATS["seats"][s].get("ro_only") or SEATS["seats"][s].get("force_mode") in ("ro", "text")):
                     print(f"[{s}] 顶替跳过：只读座位不能改文件", file=sys.stderr)
                     continue
                 if not ro and text_only_seat(s):
@@ -3189,6 +3233,12 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                     print(f"[{s}] 今日顶替上限已达 {limit}", file=sys.stderr)
                     continue
 
+                actual_mode = effective_mode(None, SEATS['seats'][s], flags)
+                actual_ro, actual_text = actual_mode != 'rw', actual_mode == 'text'
+                actual_fields = dict(text_fields, task_class='draft' if actual_text else 'review' if actual_ro else 'write')
+                if actual_text:
+                    actual_fields['text'] = True
+                actual_collect = collect and not ((text_only_seat(s) or (actual_text and agent_use_workspace(SEATS['seats'][s]))) and not attach)
                 effort_fields = {"effort": effort if effort is not None else SEATS["seats"][s].get("effort", "low")} if supports_effort(s) else {}
                 with deferred_signals():
                     success = False
@@ -3204,7 +3254,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                                     "claude_pid": os.environ.get("CLAUDE_PID") or None,
                                     "seat": seat, "actual": s,
                                     "model": SEATS["seats"][s].get("model") or "default",
-                                    "workdir": workdir, "prompt": prompt_id, "ro": ro,
+                                    "workdir": workdir, "prompt": prompt_id, "ro": actual_ro,
                                     "timeout": timeout, "started": now(),
                                     "panel": os.environ.get("AIW_PANEL_DIR") or None,
                                     "nested": os.environ.get("AIW_NESTED") == "1",
@@ -3215,20 +3265,20 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                         try:
                             attempt["attempted"] = True
                             cfg = SEATS["seats"][s]
-                            kind = "cli" if agent_use_workspace(cfg) and not text else cfg.get("kind")
+                            kind = "cli" if agent_use_workspace(cfg) and not actual_text else cfg.get("kind")
                             if net and agent_use_workspace(cfg):
                                 print(f"[ai-worker] {s}：workspace 座位联网由供应商决定，--net 不生效", file=sys.stderr)
                             if kind != "cli" and not attachments_warned:
                                 warn_large_attachments(attachment_files)
                                 attachments_warned = True
-                            task_prompt = prompt + render_attachments(attachment_files, kind) + dispatch_reminders(s, ro, workdir, net, verify)
-                            if collect:
+                            task_prompt = prompt + render_attachments(attachment_files, kind) + dispatch_reminders(s, actual_ro, workdir, net, verify)
+                            if actual_collect:
                                 task_prompt += "\n\n" + findings.SUFFIX
                             if os.environ.get("AIW_PANEL_FORMAT") == "1" and os.environ.get("AIW_PANEL_DIR"):
                                 task_prompt += PANEL_FORMAT
                             attempt["executed"] = True
-                            r = run_seat(s, task_prompt, workdir, timeout, ro, effort_fields.get("effort"), None, net,
-                                         changes.baseline_status, **({"text": True} if text else {}),
+                            r = run_seat(s, task_prompt, workdir, timeout, actual_ro, effort_fields.get("effort"), None, net,
+                                         changes.baseline_status, **({"text": True} if actual_text else {}),
                                          **({"run_dir": task_run_dir if s == seat else new_run_dir(s)} if task_run_dir is not None else {}))
                         except RunInterrupted as e:
                             interruption, r = e, e.result
@@ -3240,14 +3290,14 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             schema_errors = structured.inner_check(raw_output, r.get("run_dir"), s)
                             if schema_errors:
                                 r.update(kind="format", schema_invalid=True, err=r["err"] + "\n结构化结果不合格：" + "；".join(schema_errors[:5]))
-                        if collect and r["kind"] == "ok":
+                        if actual_collect and r["kind"] == "ok":
                             try:
                                 body, parsed, error = findings.parse(raw_output)
                                 if parsed is not None:
                                     fixed = findings.sanitize(parsed["fixed"], 300)
                                     if not body.strip():
                                         r.update(kind="empty", rc=2, err=r["err"] + "\n只有记录块，没有正文")
-                                    elif record_findings(workdir, seat, s, via, ro, prompt_id, r.get("run_dir"), parsed, changes, text=text):
+                                    elif record_findings(workdir, seat, s, via, actual_ro, prompt_id, r.get("run_dir"), parsed, changes, text=actual_text):
                                         notes = findings.render(parsed)
                                         r["out"] = body + ("\n\n" + notes if notes else "")
                                     else:
@@ -3255,7 +3305,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                                 elif error:
                                     print(f"[ai-worker] 观察记录块格式不对，已忽略：{error}", file=sys.stderr)
                                 elif not ro and not changes.failed:
-                                    record_findings(workdir, seat, s, via, ro, prompt_id, r.get("run_dir"), None, changes, text=text)
+                                    record_findings(workdir, seat, s, via, actual_ro, prompt_id, r.get("run_dir"), None, changes, text=actual_text)
                             except Exception as error:
                                 parsed = None
                                 r["out"] = raw_output
@@ -3289,7 +3339,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                     if not ro and r['kind'] == 'ok' and r.get('run_dir'):
                         changes.save_evidence(r['run_dir'], source_root if worktree_fields else None)
                     token_fields = run_tokens(s, r)
-                    ledger({**text_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), **declared_fields(raw_output if r["kind"] in ("ok", "format") else None), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
+                    ledger({**actual_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), **declared_fields(raw_output if r["kind"] in ("ok", "format") else None), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": actual_ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
                             "run_dir": r.get("run_dir"),
                             "kind": r["kind"], "rc": r["rc"], "secs": r["secs"], "substituted": s != seat,
                             "err_tail": r["err"][-300:],
