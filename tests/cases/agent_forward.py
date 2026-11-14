@@ -1,4 +1,10 @@
 """Pure offline checks of forwarding identity, no model/remote process."""
+import json
+import sys
+import tempfile
+from pathlib import Path
+from unittest import mock
+
 from support import check
 from agent_forward import describe, resolve
 
@@ -35,7 +41,33 @@ def forwarding_identity_rejects_ambiguity_and_write_relaxation():
         pass
 
 
-CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names, forwarding_identity_rejects_ambiguity_and_write_relaxation)}
+def forwarding_runs_here_when_it_cannot_carry_the_request():
+    # #867: an --effort the receiver's rows would not carry, or a forwarder that cannot check
+    # identities, keeps the dispatch here (None) instead of failing it with 64.
+    import ai_worker as w
+    row = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['{bin}', '{prompt}'], 'argv_ro': ['{bin}', '{prompt}'],
+           'model': 'm', 'effort': 'medium', 'model_args': ['--effort', '{effort}']}
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        prompt = t / 'p.md'; prompt.write_text('x')
+        marker = t / 'called'
+        def forwarder(protocols):
+            script = t / f'forward-{len(protocols)}.py'
+            script.write_text('import json,sys,pathlib\n'
+                              'if sys.argv[1:] == ["capabilities"]:\n'
+                              f'    print(json.dumps({{"protocols": {json.dumps(protocols)}}})); sys.exit(0)\n'
+                              f'pathlib.Path({str(marker)!r}).write_text("x"); sys.exit(0)\n')
+            return [sys.executable, str(script)]
+        with mock.patch.dict(w.SEATS, {'capabilities': ['agent-runtime-v1']}), mock.patch.dict(w.SEATS['seats'], {'seatx': row}):
+            for command, values in ((forwarder(['agent-desc-v1']), {'effort': 'high'}), (forwarder([]), {})):
+                marker.unlink(missing_ok=True)
+                rc = w.forward_dispatch(command, 'seatx', td, '60', str(prompt), {'--ro'}, [], values, {}, chain=['seatx'])
+                check(rc is None, f'expected local execution, got {rc!r}')
+                check(not marker.exists(), 'forwarder was asked to run it')
+
+
+CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names, forwarding_identity_rejects_ambiguity_and_write_relaxation,
+                                 forwarding_runs_here_when_it_cannot_carry_the_request)}
 
 
 def changed_runtime_rejected_before_any_execution():

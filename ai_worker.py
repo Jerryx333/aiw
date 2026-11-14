@@ -2807,14 +2807,22 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         return None
     if 'agent-runtime-v1' in SEATS.get('capabilities', []):
         from agent_forward import describe, PROTOCOL
+        # Nothing has been queued yet: a forwarder that cannot check identities, or an
+        # --effort the receiver's rows would not carry, runs here instead (#867).
         try:
             proof = subprocess.run(command + ['capabilities'], capture_output=True, text=True, timeout=5)
-            if proof.returncode or PROTOCOL not in json.loads(proof.stdout).get('protocols', []):
-                raise ValueError('capability')
-            if values.get('effort') is not None and any(SEATS['seats'][name].get('effort', '') != values['effort'] for name in chain):
-                raise ValueError('effort-override')
+            capable = not proof.returncode and PROTOCOL in json.loads(proof.stdout).get('protocols', [])
+        except (ValueError, OSError, subprocess.TimeoutExpired, TypeError, AttributeError):
+            capable = False
+        if not capable:
+            print('[ai-worker] 执行机不支持 Agent 身份核对，改在本机执行', file=sys.stderr)
+            return None
+        if values.get('effort') is not None and any(SEATS['seats'].get(name, {}).get('effort', '') != values['effort'] for name in chain):
+            print('[ai-worker] 指定的推理强度和座位默认不同，不转发，改在本机执行', file=sys.stderr)
+            return None
+        try:
             agent_description = describe(SEATS, chain, 'text' if '--text' in flags else 'ro' if '--ro' in flags else 'rw', str(Path.home()))
-        except (ValueError, OSError, subprocess.TimeoutExpired, KeyError, TypeError, AttributeError):
+        except (ValueError, OSError, KeyError, TypeError, AttributeError):
             print('[ai-worker] Agent 转发能力或身份核对失败，未执行', file=sys.stderr)
             return 64
     role = seat if seat in ('write', 'review', 'draft') else None
