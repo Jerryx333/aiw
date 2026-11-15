@@ -2,6 +2,8 @@
 # aiw — aiw 统一入口。任意项目、任意机器同一个命令。
 #   aiw <write|review|draft|seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--no-fallback] [--chain seat-a,seat-b] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒]   外包一单
 #     prompt_file 写 - 时从标准输入读；--text 隐含 --ro；workspace 座位禁用工具；draft 自动启用
+#   aiw <seat> ... --background [--no-notify]  后台派单：立即返回任务编号，结束后用 ocs 通知发起会话
+#   aiw bg status <编号> [--json] | result <编号> | list [--all]  查看后台派单
 #   aiw off [30m|2h|3d|forever]  关闭派单（默认至本地次日零点）
 #   aiw on                     恢复派单
 #   aiw status                 查看派单开关
@@ -118,5 +120,10 @@ case "$cmd" in
     exit 0
     ;;
   help|-h|--help) sed -n '2,/^set -euo pipefail/{ /^#/p; }' "$0" | sed 's/^# \{0,1\}//' ;;
-  *)        exec "$PY" "${H}/ai_worker.py" "$@" ;;
+  bg)       shift; exec "$PY" "${H}/background.py" "$@" ;;
+  *)
+    for arg in "$@"; do
+      if [ "$arg" = --background ]; then exec "$PY" "${H}/background.py" start "$@"; fi
+    done
+    exec "$PY" "${H}/ai_worker.py" "$@" ;;
 esac
