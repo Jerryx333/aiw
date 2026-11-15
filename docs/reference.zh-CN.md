@@ -421,12 +421,12 @@ worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findin
 
 普通派单默认阻塞：等执行结束，原样返回输出和退出码。主会话所在客户端自己就有「后台命令跑完提醒」（如 Claude Code 的后台 Bash）时照旧用阻塞派单放后台即可。客户端没有这种提醒（Pi、Codex 等）时，在派单命令上加 `--background`：
 
-- 先做和普通派单相同的用法检查（参数个数、未知开关、空的标准输入等），出错立即返回 64，不建任务；`prompt_file` 写 `-` 时先把标准输入存进任务目录。
+- 先做不读座位配置就能判的用法检查（参数个数、未知开关、超时值、工作目录、说明文件、`--verify`/`--worktree` 与只读的组合、空的标准输入），出错立即返回 64，不建任务；座位不存在、已停用等要读配置的错误在后台执行时报出，照常以 `failed` 通知；`prompt_file` 写 `-` 时先把标准输入存进任务目录。
 - 通过后交给脱离当前会话的监工进程执行，立即打印任务编号（`bg-<时间>-<随机>`）、`<STATE>/bg/<编号>/stdout.log` 和 `stderr.log` 后返回 0。
 - 派单结束后记下退出码和状态：0 为 `succeeded`，124 为 `timeout`，被信号中止为 `interrupted`，其余为 `failed`；结果文件取 aiw 的「全文」行。
-- 发起时用 `ocs whoami --json` 取会话的固定编号（如 `claude-1a2b3c4d`、`pi-1a2b3c4d`，不用可改名的名字）绑定通知地址；结束时 `ocs dm <编号> --as aiw` 发一条通知并唤醒该会话，内容只有任务编号、状态、退出码、结果位置和下一步命令 `aiw bg result <编号>`，不含执行方输出。通知先记已发再投递，结果未知也不重发。Pi 需装好 ocs 的 Pi 扩展（`ocs doctor --fix` 可装），它收到后会触发新一轮。Claude Code 会把来自会话外进程（后台监工就是）的唤醒按跨会话入站关卡扣下等人批准，5 分钟没批就不送达（消息仍存在 ocs，`ocs inbox` 可见）；Claude Code 主会话请用自带的后台 Bash 跑阻塞派单，不必用 `--background`。
+- 发起时用 `ocs whoami --json` 取会话的固定编号（如 `claude-1a2b3c4d`、`pi-1a2b3c4d`）绑定通知地址；ocs 只给出可改名的名字时按「没有通知通道」处理，不退回名字；结束时 `ocs dm <编号> --as aiw` 发一条通知并唤醒该会话，内容只有任务编号、状态、退出码、结果位置和下一步命令 `aiw bg result <编号>`，不含执行方输出。通知先记已发再投递，结果未知也不重发。Pi 需装好 ocs 的 Pi 扩展（`ocs doctor --fix` 可装），它收到后会触发新一轮。Claude Code 会把来自会话外进程（后台监工就是）的唤醒按跨会话入站关卡扣下等人批准，5 分钟没批就不送达（消息仍存在 ocs，`ocs inbox` 可见）；Claude Code 主会话请用自带的后台 Bash 跑阻塞派单，不必用 `--background`。
 - 本机没有 ocs、认不出当前会话或加了 `--no-notify` 时照常后台执行，但启动输出明确写「完成后不会自动回报」，需要自己 `aiw bg status <编号>` 查。
-- 发起会话已退出时 ocs 投递失败，只记在 `job.json` 的 `notify.exit`，不补发；重新打开后用 `aiw bg list` 找回。监工进程不在了而任务仍记为 running 时，`aiw bg status` 显示 `lost`。
+- 发起会话已退出时 ocs 投递失败，只记在 `job.json` 的 `notify.exit`，不补发；重新打开后用 `aiw bg list` 找回。监工从启动到退出一直持有 `supervisor.lock`（发起进程先锁好再交给它）；任务仍记为 running 而锁没人持有时，`aiw bg status` 显示 `lost`。监工只能由发起进程拉起，手动运行或在被外包的会话里运行都返回 64。
 - `aiw bg result <编号>` 运行中返回 75；结束后打印输出、stderr 末 20 行，并返回原退出码。被外包的会话（`AIW_NESTED=1`）不能用 `--background`。`aiw gc` 按天数一并清理 `<STATE>/bg`。
 
 ## 执行方独立 CODEX_HOME

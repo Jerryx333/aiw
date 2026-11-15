@@ -16,6 +16,7 @@ pi-1a2b3c4d），不用可改名的名字，切到别的会话也不会投错。
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import secrets
@@ -61,21 +62,25 @@ def save(path: Path, job: dict) -> None:
     os.replace(tmp, path / "job.json")
 
 
-def alive(pid) -> bool:
-    if not isinstance(pid, int) or pid <= 0:
+def supervised(path: Path) -> bool:
+    """监工整个生命周期持有 supervisor.lock；锁抢得到就说明没有活着的监工。
+    用锁而不是进程号判活：进程号会被复用，锁随进程退出自动释放。"""
+    try:
+        fd = os.open(path / "supervisor.lock", os.O_RDONLY)
+    except FileNotFoundError:
         return False
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
         return True
-    return True
+    finally:
+        os.close(fd)
+    return False
 
 
-def current_state(job: dict) -> str:
+def current_state(path: Path, job: dict) -> str:
     """running 但监工已不在（被杀、关机）时报 lost，避免永远显示在跑。"""
-    if job.get("state") == "running" and not alive(job.get("supervisor_pid")):
+    if job.get("state") == "running" and not supervised(path):
         return "lost"
     return job.get("state", "unknown")
 
@@ -93,13 +98,11 @@ def resolve_address() -> tuple[str | None, str]:
     except ValueError:
         identity = None
     if isinstance(identity, dict):
+        # 只认固定编号；名字可被改名或 --force 抢走，退回名字会投错会话。
         ident = identity.get("id")
         if isinstance(ident, str) and ident.strip():
             return ident.strip(), ""
-        addresses = identity.get("addresses")
-        if isinstance(addresses, list) and addresses and isinstance(addresses[0], str) and addresses[0].strip():
-            return addresses[0].strip(), ""
-    return None, "ocs 认不出当前会话"
+    return None, "ocs 认不出当前会话的固定编号"
 
 
 def start(argv: list[str]) -> int:
@@ -111,12 +114,30 @@ def start(argv: list[str]) -> int:
     sys.path.insert(0, str(HERE))
     from ai_worker import AttachError, split_argv
     try:
-        args, _, _ = split_argv(argv, DISPATCH_FLAGS, values={})
+        values = {}
+        args, flags, _ = split_argv(argv, DISPATCH_FLAGS, values=values)
     except AttachError as e:
         print(f"[aiw bg] {e}", file=sys.stderr)
         return 64
     if len(args) != 4 or args[0] in {"doctor", "enable"}:
         print(USAGE, file=sys.stderr)
+        return 64
+    # 和普通派单一样先拦下不读座位配置就能判的用法错误；要读配置的检查（座位
+    # 是否存在、停用、只读座位等）留给后台执行，失败照常通知 failed。
+    seat, workdir, timeout_s, prompt_file = args
+    readonly = "--ro" in flags or "--text" in flags or seat in ("review", "draft")
+    for flag, name in (("verify", "--verify"), ("--worktree", "--worktree")):
+        if (values.get(flag) or flag in flags) and readonly:
+            print(f"[aiw bg] {name} 只用于写任务", file=sys.stderr)
+            return 64
+    if not timeout_s.isdigit() or int(timeout_s) <= 0:
+        print(f"[aiw bg] 超时应为正整数秒，收到 {timeout_s!r}", file=sys.stderr)
+        return 64
+    if not Path(workdir).is_dir():
+        print(f"[aiw bg] 工作目录不存在：{workdir}", file=sys.stderr)
+        return 64
+    if prompt_file != "-" and not Path(prompt_file).is_file():
+        print(f"[aiw bg] 读不了 prompt 文件 {prompt_file}", file=sys.stderr)
         return 64
     stdin_prompt = None
     if args[3] == "-":
@@ -143,10 +164,18 @@ def start(argv: list[str]) -> int:
     job = {"id": job_id, "argv": argv, "cwd": os.getcwd(), "started_at": now(), "state": "running",
            "notify": {"address": address} if address else {"disabled": reason}}
     save(path, job)
-    with (path / "supervisor.log").open("ab") as log:
-        subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "supervise", job_id],
-                               start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                               close_fds=True, cwd=os.getcwd())
+    # 先在这里拿锁再交给监工，status 从第一刻起就判得出活着，没有「刚启动误报 lost」的空档。
+    lock = os.open(path / "supervisor.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with (path / "supervisor.log").open("ab") as log:
+            sup = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "supervise", job_id, str(lock)],
+                                   start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                   pass_fds=(lock,), cwd=os.getcwd())
+    finally:
+        os.close(lock)
+    job["supervisor_pid"] = sup.pid
+    save(path, job)
     print(f"任务编号: {job_id}")
     print("状态: running（后台执行中）")
     print(f"输出: {path / 'stdout.log'}")
@@ -163,7 +192,8 @@ def run_dir_from(stderr_text: str) -> str | None:
     for line in reversed(stderr_text.splitlines()):
         for label in ("[ai-worker] 全文：", "[ai-worker] 排查："):
             if line.startswith(label):
-                return line[len(label):].split("（", 1)[0].strip()
+                # 只去掉 aiw 自己追加的附注，路径里本身的全角括号要保留。
+                return line[len(label):].split("（output.md 没写成功", 1)[0].strip()
     return None
 
 
@@ -190,13 +220,22 @@ def send_notice(path: Path, job: dict) -> None:
     save(path, job)
 
 
-def supervise(job_id: str) -> int:
+def supervise(job_id: str, lock_fd: str) -> int:
+    """只由 start 拉起：必须带着 start 交来的、已锁住的 supervisor.lock。"""
+    if os.environ.get("AIW_NESTED") == "1":
+        return 64
     path = job_dir(job_id)
-    if path is None or not (path / "job.json").exists():
+    if path is None or not (path / "job.json").exists() or not lock_fd.isdigit():
+        return 64
+    try:
+        held, expected = os.fstat(int(lock_fd)), os.stat(path / "supervisor.lock")
+    except OSError:
+        return 64
+    if (held.st_dev, held.st_ino) != (expected.st_dev, expected.st_ino):
         return 64
     job = load(path)
-    job["supervisor_pid"] = os.getpid()
-    save(path, job)
+    if job.get("state") != "running" or "rc" in job:
+        return 64
     worker = [sys.executable, str(HERE / "ai_worker.py"), *job["argv"]]
     stop = {"signal": None}
 
@@ -231,7 +270,7 @@ def supervise(job_id: str) -> int:
     return 0
 
 
-def describe(job: dict) -> str:
+def describe(path: Path, job: dict) -> str:
     notify = job.get("notify") or {}
     if notify.get("address"):
         sent = "已通知" if notify.get("exit") == 0 else (f"通知投递失败（ocs 退出码 {notify['exit']}，不补发）"
@@ -240,7 +279,7 @@ def describe(job: dict) -> str:
     else:
         notice = f"未接通知（{notify.get('disabled', '未知原因')}）"
     rc = job.get("rc")
-    return "\n".join([f"任务编号: {job['id']}", f"状态: {current_state(job)}" + (f"（退出码 {rc}）" if rc is not None else ""),
+    return "\n".join([f"任务编号: {job['id']}", f"状态: {current_state(path, job)}" + (f"（退出码 {rc}）" if rc is not None else ""),
                       f"开始: {job.get('started_at')}" + (f"  结束: {job['finished_at']}" if job.get("finished_at") else ""),
                       f"结果: {job.get('result') or job.get('run_dir') or '（未结束）'}", f"通知: {notice}"])
 
@@ -248,8 +287,8 @@ def describe(job: dict) -> str:
 def main(argv: list[str]) -> int:
     if argv[:1] == ["start"]:
         return start(argv[1:])
-    if argv[:1] == ["supervise"] and len(argv) == 2:
-        return supervise(argv[1])
+    if argv[:1] == ["supervise"] and len(argv) == 3:
+        return supervise(argv[1], argv[2])
     if argv[:1] == ["list"] and argv[1:] in ([], ["--all"]):
         paths = sorted(JOBS.glob("bg-*"), reverse=True) if JOBS.is_dir() else []
         for path in paths if argv[1:] else paths[:20]:
@@ -257,7 +296,7 @@ def main(argv: list[str]) -> int:
                 job = load(path)
             except (OSError, ValueError):
                 continue
-            print(f"{job['id']}  {current_state(job):11s}  rc={job.get('rc', '-')}  {' '.join(job['argv'][:1])}")
+            print(f"{job['id']}  {current_state(path, job):11s}  rc={job.get('rc', '-')}  {' '.join(job['argv'][:1])}")
         return 0
     if argv[:1] in (["status"], ["result"]) and len(argv) in (2, 3):
         path = job_dir(argv[1])
@@ -267,21 +306,22 @@ def main(argv: list[str]) -> int:
         job = load(path)
         if argv[0] == "status":
             if argv[2:] == ["--json"]:
-                print(json.dumps({**job, "state": current_state(job)}, ensure_ascii=False))
+                print(json.dumps({**job, "state": current_state(path, job)}, ensure_ascii=False))
             elif argv[2:]:
                 print(USAGE, file=sys.stderr)
                 return 64
             else:
-                print(describe(job))
+                print(describe(path, job))
             return 0
         if argv[2:]:
             print(USAGE, file=sys.stderr)
             return 64
-        state = current_state(job)
+        state = current_state(path, job)
         if state == "running":
             print(f"[aiw bg] {job['id']} 还在跑，结束后会通知；现在可看 aiw bg status {job['id']}", file=sys.stderr)
             return 75
-        sys.stdout.write((path / "stdout.log").read_text(encoding="utf-8", errors="replace"))
+        if (path / "stdout.log").exists():
+            sys.stdout.write((path / "stdout.log").read_text(encoding="utf-8", errors="replace"))
         tail = (path / "stderr.log").read_text(encoding="utf-8", errors="replace").splitlines()[-20:] \
             if (path / "stderr.log").exists() else []
         print("\n".join(tail), file=sys.stderr)

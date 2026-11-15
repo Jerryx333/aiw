@@ -63,11 +63,11 @@ def notices(t: Path) -> list[list[str]]:
 def finished(t, ident):
     """等监工进程退出（它发完通知还会再写一次 job.json），再读最终记录。"""
     sys.path.insert(0, str(REPO))
-    from background import alive
+    from background import supervised
 
     def done():
         data = job(t, ident)
-        return data if data["state"] != "running" and not alive(data.get("supervisor_pid")) else None
+        return data if data["state"] != "running" and not supervised(t / "state/bg" / ident) else None
     return wait_until(done, f"{ident} 没结束", timeout=90)
 
 
@@ -83,6 +83,10 @@ def background_success_and_parallel():
         check(first != second, "两单编号重复")
         # 立即返回：假执行方要 2 秒，返回时还在跑。
         check(job(t, first)["state"] == "running", "后台模式没有立即返回")
+        r = aiw("bg", "status", first, env=env)
+        check(r.returncode == 0 and "状态: running" in r.stdout, "刚启动不应误报 lost: " + r.stdout)
+        r = aiw("bg", "supervise", first, "0", env=env)
+        check(r.returncode == 64, "不带监工锁不能手动再起监工")
         r = aiw("bg", "result", first, env=env)
         check(r.returncode == 75 and "还在跑" in r.stderr, "运行中取结果应返回 75")
         for ident in (first, second):
@@ -142,7 +146,12 @@ def background_no_notify_and_guards():
         finished(t, job_id(r.stdout))
         r = aiw("qoder", str(wd), "30", str(prompt), "--background", env=dict(env, AIW_NESTED="1"))
         check(r.returncode == 64 and "不能后台派单" in r.stderr, r.stderr)
-        for bad in (["qoder", str(wd), "30", "--background"], ["qoder", str(wd), "30", str(prompt), "--bogus", "--background"]):
+        for bad in (["qoder", str(wd), "30", "--background"], ["qoder", str(wd), "30", str(prompt), "--bogus", "--background"],
+                    ["qoder", str(wd), "bad", str(prompt), "--background"], ["qoder", str(wd), "0", str(prompt), "--background"],
+                    ["review", str(wd), "30", str(prompt), "--verify", "true", "--background"],
+                    ["qoder", str(wd), "30", str(prompt), "--ro", "--worktree", "--background"],
+                    ["qoder", str(t / "missing"), "30", str(prompt), "--background"],
+                    ["qoder", str(wd), "30", str(t / "missing.md"), "--background"]):
             r = aiw(*bad, env=env)
             check(r.returncode == 64, f"用法错误应立即返回 64: {bad} {r.stdout}{r.stderr}")
         r = aiw("qoder", str(wd), "30", "-", "--background", env=env, input=" \n")
@@ -156,12 +165,36 @@ def background_no_notify_and_guards():
 def background_lost_supervisor():
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
+        env = dict(os.environ, AIW_STATE=str(t / "state"))
         folder = t / "state/bg/bg-20260101-000000-abcdef"
         folder.mkdir(parents=True)
+        # 记录的进程号还活着（被复用成别的进程）也要判 lost：判活看监工锁，不看进程号。
         (folder / "job.json").write_text(json.dumps({"id": folder.name, "argv": ["qoder"], "state": "running",
-                                                     "supervisor_pid": 2 ** 22 + 12345, "notify": {}}))
-        r = sh([sys.executable, str(REPO / "background.py"), "status", folder.name], env=dict(os.environ, AIW_STATE=str(t / "state")))
+                                                     "supervisor_pid": os.getpid(), "notify": {}}))
+        (folder / "supervisor.lock").write_text("")
+        r = sh([sys.executable, str(REPO / "background.py"), "status", folder.name], env=env)
         check(r.returncode == 0 and "状态: lost" in r.stdout, r.stdout + r.stderr)
+        r = sh([sys.executable, str(REPO / "background.py"), "result", folder.name], env=env)
+        check(r.returncode == 1 and "Traceback" not in r.stderr, "lost 且没有日志时 result 不应崩: " + r.stderr)
+        lock = os.open(folder / "supervisor.lock", os.O_RDWR)
+        r = sh([sys.executable, str(REPO / "background.py"), "supervise", folder.name, str(lock)],
+               env=dict(env, AIW_NESTED="1"))
+        os.close(lock)
+        check(r.returncode == 64 and not (folder / "stdout.log").exists(), "被外包的会话不能起监工")
+
+
+def background_address_and_result_path():
+    sys.path.insert(0, str(REPO))
+    import background as b
+    from unittest.mock import patch
+    import subprocess as sp
+    reply = sp.CompletedProcess([], 0, json.dumps({"name": "renamable", "addresses": ["renamable"]}), "")
+    with patch.object(b.subprocess, "run", return_value=reply):
+        address, reason = b.resolve_address()
+    check(address is None and "固定编号" in reason, "没有固定编号时不能退回可改名的名字")
+    path = "/tmp/state（测试）/runs/r/output.md"
+    check(b.run_dir_from("[ai-worker] 全文：" + path) == path, "路径里的全角括号被截断")
+    check(b.run_dir_from("[ai-worker] 排查：/tmp/r（output.md 没写成功，全文只在上面的输出里）") == "/tmp/r", "附注没去掉")
 
 
 CASES = {case.__name__: case for case in (
@@ -169,4 +202,5 @@ CASES = {case.__name__: case for case in (
     background_failure_timeout,
     background_no_notify_and_guards,
     background_lost_supervisor,
+    background_address_and_result_path,
 )}
