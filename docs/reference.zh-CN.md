@@ -302,6 +302,8 @@ aiw panel --free <workdir> <timeout_s> <prompt_file>  # 只问免费座位，不
 aiw review <workdir> 900 - <<'EOF'  # prompt_file 写 - 从标准输入读，免建临时文件；panel、map 同样支持；转发时存进本单 run 目录
 评审本次改动……
 EOF
+aiw review <workdir> 900 task.md --background  # 后台派单：立即返回任务编号，结束后用 ocs 唤醒发起会话；见「后台派单与完成通知」
+aiw bg status <编号> [--json] | result <编号> | list [--all]
 aiw doctor | route "消息" | goal init|next|verify|status <file> | weekly [天] [--json] | snapshot | sync
 aiw goal verify <file> [id] [--force] [--accept-verify-change] [--full]
 aiw route --check
@@ -386,7 +388,7 @@ Claude 派单钩子检查也识别已启用的 `aiw@…` 插件提供的 `UserPr
 
 会诊后填写目录中的 `adjudication.md`：每条关键意见标接受/驳回（理由或证据）/暂缓（写明等什么），不以多数票收敛。未提供 `--prior` 仅提醒，不改变退出码；文件读不到返回 64。
 
-worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`，panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
+worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`（入口另认 `--background --no-notify`，见下节），panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
 
 `aiw write . 1200 task.txt --worktree`（点名写座位也可用）：只用于写任务，与 `--ro`、review/draft 或只读座位同用返回 64；workdir 必须在有 HEAD 提交的 Git 仓库内。
 从当前 HEAD 创建 `aiw/<run-id>` 分支及 `<STATE>/worktrees/<run-id>`（同名分支返回 64，不覆盖）；子目录映射到同一相对路径，写锁、顶替链、提示词、沙箱与改动统计均使用新目录。未提交改动不会带入，stderr 最多列 10 个文件。macOS 上建好后把源仓库里所有被 Git 忽略的文件和目录（`.env`、`node_modules`、构建缓存等，软链按软链本身）用 clonefile 写时复制到 worktree 同一位置，不用重装依赖、不占额外空间、改动不影响源目录；含 git worktree 的目录（如 aiw 自己的 `<STATE>`）不复制。复制失败（如跨盘）只提示，不影响派单。带 `--attach` 时先在原 workdir 按全部附件规则预检；附件未跟踪、已修改或已暂存（相对 HEAD 有任何差异）返回 64，提示先提交或去掉 `--worktree`，不创建 worktree、分支或元数据；通过后在 worktree 读取对应已提交文件。
@@ -414,6 +416,18 @@ worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findin
 `aiw gc` 同时按文件 mtime 清理 `STATE/tui/` 中过期的普通文件，跳过软链。默认清理 `STATE/runs/`、`STATE/panels/`、`STATE/maps/` 下 mtime 早于 30 天的直接子目录；`STATE/codex-home/sessions/YYYY/MM/DD/` 则按目录名日期清理早于本机时区截止日的整日目录（截止当天保留，不看 mtime），不触碰 codex-home 下其他文件。`STATE/worktrees/archive/` 的 `.patch` 普通文件与 `.files` 目录也按指定天数和 mtime 清理；worktree 扫描固定 7 天，不受 gc 天数参数影响。无元数据目录仅列出不删。`aiw gc 7 --dry-run` 仅报告，不存档或删除。跳过软链，保留账本、熔断、计数、路由日志及锁文件；实际删除不可恢复。
 
 所有座位每次实际运行都在 `state/runs/<时间>-<座位>-<pid>/` 留下完整 prompt（含附件）的 `task.txt`、全文 `output.md` 和只保留末尾 200KB 的 `stderr.txt`；CLI 失败、超时、中断也保存已取得的 stdout（可能为空），agent-use 有答复时保存全文，并保留 `result/` 结果目录（含 `status.json`）。账本记录 `run_dir`。中断也归档并记账本（SIGINT 130、SIGTERM 124）。成功且全文写入成功时 stderr 最后一行为 `[ai-worker] 全文：<run_dir>/output.md`；失败且最后一次尝试有运行目录时为 `[ai-worker] 排查：<run_dir>`。成功但 output.md 写入失败时末行给出排查目录并说明全文只在上面的输出里。未带 `--verify` 时 stdout 不混入路径；归档写入失败只警告，不改变派单结果。
+
+## 后台派单与完成通知
+
+普通派单默认阻塞：等执行结束，原样返回输出和退出码。主会话所在客户端自己就有「后台命令跑完提醒」（如 Claude Code 的后台 Bash）时照旧用阻塞派单放后台即可。客户端没有这种提醒（Pi、Codex 等）时，在派单命令上加 `--background`：
+
+- 先做不读座位配置就能判的用法检查（参数个数、未知开关、超时值、工作目录、说明文件、`--verify`/`--worktree` 与只读的组合、空的标准输入），出错立即返回 64，不建任务；座位不存在、已停用等要读配置的错误在后台执行时报出，照常以 `failed` 通知；`prompt_file` 写 `-` 时先把标准输入存进任务目录。
+- 通过后交给脱离当前会话的监工进程执行，立即打印任务编号（`bg-<时间>-<随机>`）、`<STATE>/bg/<编号>/stdout.log` 和 `stderr.log` 后返回 0。
+- 派单结束后记下退出码和状态：0 为 `succeeded`，124 为 `timeout`，被信号中止为 `interrupted`，其余为 `failed`；结果文件取 aiw 的「全文」行。
+- 发起时用 `ocs whoami --json` 取会话的固定编号（如 `claude-1a2b3c4d`、`pi-1a2b3c4d`）绑定通知地址；ocs 只给出可改名的名字时按「没有通知通道」处理，不退回名字；结束时 `ocs dm <编号> --as aiw` 发一条通知并唤醒该会话，内容只有任务编号、状态、退出码、结果位置和下一步命令 `aiw bg result <编号>`，不含执行方输出。通知先记已发再投递，结果未知也不重发。Pi 需装好 ocs 的 Pi 扩展（`ocs doctor --fix` 可装），它收到后会触发新一轮。Claude Code 会把来自会话外进程（后台监工就是）的唤醒按跨会话入站关卡扣下等人批准，5 分钟没批就不送达（消息仍存在 ocs，`ocs inbox` 可见）；Claude Code 主会话请用自带的后台 Bash 跑阻塞派单，不必用 `--background`。
+- 本机没有 ocs、认不出当前会话或加了 `--no-notify` 时照常后台执行，但启动输出明确写「完成后不会自动回报」，需要自己 `aiw bg status <编号>` 查。
+- 发起会话已退出时 ocs 投递失败，只记在 `job.json` 的 `notify.exit`，不补发；重新打开后用 `aiw bg list` 找回。监工从启动到退出一直持有 `supervisor.lock`（发起进程先锁好再交给它）；任务仍记为 running 而锁没人持有时，`aiw bg status` 显示 `lost`。监工只能由发起进程拉起，手动运行或在被外包的会话里运行都返回 64。
+- `aiw bg result <编号>` 运行中返回 75；结束后打印输出、stderr 末 20 行，并返回原退出码。被外包的会话（`AIW_NESTED=1`）不能用 `--background`。`aiw gc` 按天数一并清理 `<STATE>/bg`。
 
 ## 执行方独立 CODEX_HOME
 
@@ -551,6 +565,7 @@ python3 tests/mutation_check.py credentials locked  # 只运行指定变异
 
 ## 变更记录
 
+- 2026-11-15 普通派单新增 `--background`：立即返回任务编号，结束（成功、失败、超时）后用 ocs 通知并唤醒发起会话；新增 `aiw bg status|result|list`（#63）。
 - 2026-10-14 新增 `aiw slot` 全机测试名额、内存压力等待、默认 nice +10 和限线程，后台 QoS 可选；全量 harness 自动复用，定向用例隔离名额目录。
 - 2026-10-30 新增编译准入 `shims/`：agent 会话里的 swift/xcodebuild 构建默认排测试名额并限并行编译数。起因是多座位并行时各家在本机反复编译测试，加上常驻会话，内存超出物理内存、swap 用满，一次 `swift build` 从 20 秒拖到 13 分钟。
 - 2026-10-14 写单新增可重复的 `--verify` 与 `--verify-timeout`：执行方成功后由 aiw 在主会话环境验收，输出精简结果、归档全文并记账本；验收失败返回 4。

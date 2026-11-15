@@ -50,6 +50,7 @@ CASE_MODULES = (
     "select_cases",
     "structured_flow",
     "seat_account",
+    "background",
 )
 CASES = {}
 MODULE_CASES = {}
