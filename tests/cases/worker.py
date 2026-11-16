@@ -802,6 +802,66 @@ def agent_use_transient():
 
 
 
+def no_work_streak_trips_breaker():
+    """同一座位连续 2 次没开工失败按 unavailable 熔断，ok 清零，熔断期跳过。"""
+    import ai_worker as worker
+    check(worker.no_work_failure({"kind": "transient", "reason": "provider_failed"}, None, True),
+          "provider_failed 应算没开工")
+    check(worker.no_work_failure({"kind": "transient"}, 0, False), "无改动 transient 应算没开工")
+    check(worker.no_work_failure({"kind": "timeout"}, 0, False), "无改动 timeout 应算没开工")
+    check(worker.no_work_failure({"kind": "other"}, 0, False), "无改动 other 应算没开工")
+    check(not worker.no_work_failure({"kind": "transient"}, 1, False), "有改动 transient 不算没开工")
+    check(not worker.no_work_failure({"kind": "timeout"}, None, False), "改动未知时不猜")
+    check(not worker.no_work_failure({"kind": "format"}, 0, False), "format 不算没开工")
+    check(worker.no_work_failure({"kind": "timeout"}, None, True), "只读失败没有改动概念")
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        wd = t / "wd"; wd.mkdir()
+        prompt = t / "prompt.md"; prompt.write_text("只回复 OK")
+        state = t / "state"
+        log = t / "calls"
+        env = dict(os.environ, AIW_STATE=str(state), AGENT_USE_HOME=str(fake_agent_use(t)),
+                   FAKE_AU_LOG=str(log))
+        args = [sys.executable, str(REPO / "ai_worker.py"), "doubao", str(wd), "30", str(prompt),
+                "--ro", "--no-fallback"]
+
+        def run(mode):
+            return inprocess_sh(args, env=dict(env, FAKE_AU_DOUBAO=mode))
+
+        r = run("provider_failed")
+        streak = json.loads((state / "no-work-streak.json").read_text())
+        check(r.returncode == 1 and streak["doubao"]["count"] == 1
+              and not (state / "breaker.json").exists(), (r.stderr, streak))
+        r = run("provider_failed")
+        breaker = json.loads((state / "breaker.json").read_text())["doubao"]
+        check(r.returncode == 1 and breaker["reason"] == "unavailable"
+              and "连续 2 次没开工" in r.stderr, (r.stderr, breaker))
+        calls = len(log.read_text().splitlines())
+        r = run("provider_failed")
+        rows = [json.loads(line) for line in (state / "seat-ledger.jsonl").read_text().splitlines()]
+        check(r.returncode == 1 and "熔断中" in r.stderr and rows[-1]["kind"] == "skipped_breaker"
+              and len(log.read_text().splitlines()) == calls, (r.stderr, rows[-1]))
+        (state / "breaker.json").unlink()
+        (state / "no-work-streak.json").unlink()
+        # 一次 ok 清零：先失败 1 次，再成功，再失败 1 次仍然不熔断。
+        r = run("provider_failed")
+        check(r.returncode == 1, r.stderr)
+        r = run("ok")
+        check(r.returncode == 0, r.stderr)
+        cleared = json.loads((state / "no-work-streak.json").read_text())
+        check("doubao" not in cleared, cleared)
+        r = run("provider_failed")
+        streak = json.loads((state / "no-work-streak.json").read_text())
+        check(r.returncode == 1 and streak["doubao"]["count"] == 1
+              and not (state / "breaker.json").exists(), (r.stderr, streak))
+        # no changes 的 timeout 同样计数。
+        (state / "no-work-streak.json").unlink()
+        check(run("timeout").returncode == 124, "timeout 应 rc=124")
+        check(run("timeout").returncode == 124, "timeout 应 rc=124")
+        breaker = json.loads((state / "breaker.json").read_text())["doubao"]
+        check(breaker["reason"] == "unavailable", breaker)
+
+
 def page_adapter_reasons():
     for reason, kind in (
             ("refused", "unavailable"),
@@ -1854,6 +1914,7 @@ CASES = {case.__name__: case for case in (
     agent_use_usage,
     claude_transcript_usage,
     agent_use_transient,
+    no_work_streak_trips_breaker,
     page_adapter_reasons,
     worker_regression,
     codex_net,

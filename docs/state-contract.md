@@ -85,7 +85,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | seat / actual | 请求座位和实际座位，用于展示顶替关系 |
 | executor | 可选字符串；转发单固定为 `forward`，旧记录和本机单不写此字段 |
 | forward_host | 转发单的远端主机展示名，来自 `forward.json` 的字符串 `host`，缺失或类型错误为 null；不替代本机 `host` |
-| kind | 结果类别；判断成功只看 `kind == "ok"`，失败类型也以 kind 为准，如 `timeout`、`format`、`auth`、`transient`（供应商单次失败，顶替但不熔断）、`interrupted`、`skipped_breaker` |
+| kind | 结果类别；判断成功只看 `kind == "ok"`，失败类型也以 kind 为准，如 `timeout`、`format`、`auth`、`transient`（供应商单次失败，顶替但不熔断）、`interrupted`、`skipped_breaker`、`missing_seat`（本机和执行端都没有点名座位，未执行） |
 | rc | 该次尝试的子进程退出码，不是 aiw 的最终退出码；跳过记录可为 null，不作为已完成尝试统计 |
 | secs | 本次尝试耗时秒数 |
 | err_tail | 错误输出最后 300 个字符，流水展示最后一行；跳过记录可能缺失 |
@@ -113,12 +113,23 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | workdir | #9：仅 repo 为 null 时记录工作目录的绝对真实路径，否则为 null；旧记录可能缺失 |
 | declared | 可选字符串：执行方回答末尾自报的「结果：成功 / 结果：失败」，记 `success` / `failure`，没写为 `undeclared`；只在有回答的本机尝试（kind 为 ok 或 format）写入，只作元数据，不替代 kind 判定 |
 | effort | 字符串，可选；codex / codex-sol 本次实际推理档位（low/medium/high），其他座位不出现；weekly.py 按 (seat, effort) 计数 |
+| forward_refused | 可选字符串；转发命令退回（rc=69 或点名座位在本机不可用的 66）后改在本机执行时，在本机尝试记录上写明原因；未启用转发、转发成功或整单未执行时不出现 |
 
-转发最终结果只记一条账本；rc=69 或命令启动失败不记转发尝试，回退后按原本机流程记账。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录本机文件改动统计。`forward.json` 带 `tokens` 且为合法 rollout 格式（与本机 codex 行同样的七个键、非负整数、`source: "rollout"`）时原样写入 `tokens`，否则不写此键，也不写 `tokens_null_reason`；不估算。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
+转发最终结果只记一条账本；rc=69、rc=66 或命令启动失败不记转发尝试，回退后按原本机流程记账；点名座位在本机也没有时写一条 `kind: "missing_seat"` 的跳过记录，`detail` 写执行端退回原因，`rc` 为 null。回退后的本机尝试带 `forward_refused`。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录本机文件改动统计。`forward.json` 带 `tokens` 且为合法 rollout 格式（与本机 codex 行同样的七个键、非负整数、`source: "rollout"`）时原样写入 `tokens`，否则不写此键，也不写 `tokens_null_reason`；不估算。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
 
 ## breaker.json
 
-顶层为座位名到熔断对象的映射。aiw-board 使用 `until`（Unix 时间戳，秒）判断是否仍在熔断，使用 `reason` 展示原因。worker 还写 `since`（带时区的 ISO 8601 时间），当前展示不依赖它。熔断为本机共享状态，不按会话过滤。
+顶层为座位名到熔断对象的映射。aiw-board 使用 `until`（Unix 时间戳，秒）判断是否仍在熔断，使用 `reason` 展示原因。worker 还写 `since`（带时区的 ISO 8601 时间），当前展示不依赖它。熔断为本机共享状态，不按会话过滤。连续 2 次没开工失败写入的 `reason` 为 `unavailable`，时长取 `breaker.unavailable_minutes`。
+
+## no-work-streak.json
+
+顶层为座位名到连续没开工计数的映射，用于决定是否按 `unavailable` 熔断：
+
+```json
+{"<seat>": {"count": 2, "since": "<带时区的 ISO 8601>", "kind": "transient", "reason": "provider_failed"}}
+```
+
+`provider_failed` 一律计数；`transient` / `timeout` / `other` 只在没有产生任何文件改动时计数（写任务要求 `changed_files == 0`，统计失败不猜；只读任务没有改动概念）。任意一次成功或其它结果删除该座位的条目。读改写使用 `state/.state.lock`，计数到 2 时同时按 `unavailable` 写 `breaker.json`。展示端可选读取 `count`，当前不依赖。
 
 ## daily-count.json
 

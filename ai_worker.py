@@ -83,7 +83,10 @@ HERE = Path(__file__).resolve().parent
 STATE = Path(getenv("AIW_STATE", HERE / "state"))
 LEDGER = STATE / "seat-ledger.jsonl"
 BREAKER = STATE / "breaker.json"
+NO_WORK = STATE / "no-work-streak.json"
 DAILY = STATE / "daily-count.json"
+# 转发协议：执行端确认点名座位在本机不可用、且没有起任何进程时返回 66。
+RECEIVER_SEAT_UNAVAILABLE = 66
 from seats_config import ConfigError, load_seats, load_public, forward_command, forward_runs_here, account_kind, seat_agent
 try:
     SEATS = load_seats(HERE)
@@ -1298,6 +1301,60 @@ def trip(seat: str, reason: str) -> None:
         b = load_json(BREAKER, {})
         b[seat] = {"reason": reason, "until": time.time() + minutes * 60, "since": now()}
         save_json(BREAKER, b)
+
+
+def no_work_failure(result: dict, changed_files, ro: bool) -> bool:
+    """这次失败等于没开工：provider_failed，或没产生任何文件的 transient/timeout/other。"""
+    kind = result.get("kind")
+    if kind not in ("transient", "timeout", "other"):
+        return False
+    if result.get("reason") == "provider_failed":
+        return True
+    # 只读任务本来不写文件；写任务必须确认 changed_files 为 0，统计失败（None）不猜。
+    return True if ro else changed_files == 0
+
+
+def note_work_outcome(seat: str, result: dict, changed_files, ro: bool) -> None:
+    """连续两次没开工失败时按 unavailable 熔断；任何其它结果都断掉连续计数。
+
+    计数只是旁路状态：读写失败只警告，不影响派单结果或账本。
+    """
+    no_work = no_work_failure(result, changed_files, ro)
+    trip_now = False
+    count = 0
+    try:
+        with state_lock():
+            data = load_json(NO_WORK, {})
+            data = data if isinstance(data, dict) else {}
+            previous = data.get(seat)
+            previous = previous.get("count", 0) if isinstance(previous, dict) else 0
+            if no_work:
+                count = previous + 1
+                data[seat] = {"count": count, "since": now(),
+                              "kind": result.get("kind"), "reason": result.get("reason")}
+                trip_now = count >= 2
+            else:
+                data.pop(seat, None)
+            save_json(NO_WORK, data)
+        if trip_now:
+            trip(seat, "unavailable")
+            print(f"[{seat}] 连续 {count} 次没开工，熔断 unavailable", file=sys.stderr)
+    except Exception as error:
+        print(f"[ai-worker] 警告：更新连续没开工计数失败（{type(error).__name__}）", file=sys.stderr)
+
+
+def named_seat_unavailable(seat: str) -> str | None:
+    """执行端在起任何进程前核对点名的本机座位；不可用则不许顶替。"""
+    if seat not in SEATS["seats"]:
+        return "本机座位表中没有这个座位"
+    snapshot = selection_snapshot()
+    reason = seat_policy_unavailable(seat, snapshot=snapshot)
+    if reason:
+        return reason
+    breaker = breaker_open(seat, breakers=snapshot[1])
+    if breaker:
+        return f"熔断中：{breaker}"
+    return seat_unavailable(seat, snapshot=snapshot)
 
 
 def substitute_limits() -> dict:
@@ -2803,7 +2860,13 @@ def read_stdin_prompt():
 def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, attach, values, attempt,
                      inflight=None, *, chain, before_execute=None, prompt=None):
     agent_description = None
-    if any(SEATS['seats'].get(name, {}).get('local_only') for name in chain):
+    role = seat if seat in ('write', 'review', 'draft') else None
+    named = role is None
+    # 点名座位只把座位本身送过去；本机链上的备用只用于回退后在本机执行，
+    # 不能成为执行端用别的座位顶替点名座位的入口。
+    wire_chain = [seat] if named else chain
+    wire_no_fallback = named
+    if any(SEATS['seats'].get(name, {}).get('local_only') for name in wire_chain):
         return None
     if 'agent-runtime-v1' in SEATS.get('capabilities', []):
         from agent_forward import describe, PROTOCOL
@@ -2817,16 +2880,22 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         if not capable:
             print('[ai-worker] 执行机不支持 Agent 身份核对，改在本机执行', file=sys.stderr)
             return None
-        if values.get('effort') is not None and any(SEATS['seats'].get(name, {}).get('effort', '') != values['effort'] for name in chain):
+        if values.get('effort') is not None and any(SEATS['seats'].get(name, {}).get('effort', '') != values['effort'] for name in wire_chain):
             print('[ai-worker] 指定的推理强度和座位默认不同，不转发，改在本机执行', file=sys.stderr)
             return None
-        try:
-            agent_description = describe(SEATS, chain, 'text' if '--text' in flags else 'ro' if '--ro' in flags else 'rw', str(Path.home()))
-        except (ValueError, OSError, KeyError, TypeError, AttributeError):
-            print('[ai-worker] Agent 转发能力或身份核对失败，未执行', file=sys.stderr)
-            return 64
-    role = seat if seat in ('write', 'review', 'draft') else None
-    if 'chain' not in values and role is None and main_exclude_reason(seat):
+        unknown = [name for name in wire_chain if name not in SEATS['seats']]
+        if unknown:
+            # 本机没有行，没有可核对的配方；仍按执行端自己的配置执行，且点名座位不许顶替。
+            print(f"[ai-worker] 本机没有座位 {'、'.join(unknown)}，不发送身份描述；改按执行端配置核对", file=sys.stderr)
+        else:
+            try:
+                agent_description = describe(
+                    SEATS, wire_chain, 'text' if '--text' in flags else 'ro' if '--ro' in flags else 'rw',
+                    str(Path.home()), exact={seat} if named else ())
+            except (ValueError, OSError, KeyError, TypeError, AttributeError):
+                print('[ai-worker] Agent 转发能力或身份核对失败，未执行', file=sys.stderr)
+                return 64
+    if 'chain' not in values and named and main_exclude_reason(seat):
         print(f"[ai-worker] {main_exclude_reason(seat)}", file=sys.stderr)
         return 64
     # 本机配置停用的点名座位不转发：执行端按它自己的配置判断，看不到这里的停用。
@@ -2872,7 +2941,10 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         prompt_file = str(run_dir / 'forward-prompt.md')
         Path(prompt_file).write_text(prompt, encoding='utf-8')
     argv = command + [seat, workdir, timeout_s, prompt_file]
-    argv += ['--chain', ','.join(chain)]
+    argv += ['--chain', ','.join(wire_chain)]
+    # 点名座位不许执行端用链上的别的座位顶替；角色仍按链顶替。
+    if wire_no_fallback and '--no-fallback' not in flags:
+        flags.add('--no-fallback')
     argv += [flag for flag in ('--ro', '--text', '--net', '--no-fallback', '--no-findings') if flag in flags]
     if values.get('effort') is not None:
         argv += ['--effort', values['effort']]
@@ -2942,8 +3014,17 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
             proc.send_signal(signal.SIGINT if exc.code == 130 else signal.SIGTERM)
             proc.wait()
             interruption, rc = exc, exc.code
+    if rc == RECEIVER_SEAT_UNAVAILABLE:
+        # 执行端在起任何进程前确认点名座位不存在、停用、未安装或熔断；不能换个座位顶上。
+        reason = f'执行端没有点名座位 {seat}（或已停用、未安装、熔断），未执行'
+        attempt['forward_refused'] = reason
+        attempt['forward_missing_seat'] = True
+        print(f'[ai-worker] {reason}，改在本机执行', file=sys.stderr)
+        return None
     if rc == 69:
-        print('[ai-worker] 转发不可用（rc=69），改在本机执行', file=sys.stderr)
+        reason = '转发命令返回 69（执行端不可达或未接收），改在本机执行'
+        attempt['forward_refused'] = reason
+        print(f'[ai-worker] {reason}', file=sys.stderr)
         return None
     rc = rc if rc >= 0 else 128 - rc
     attempt.update(run_dir=str(run_dir), output_saved=(run_dir / 'output.md').exists(), executed=True)
@@ -3104,6 +3185,13 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     if mode == 'rw' and role is None and text_only_seat(seat) and explicit_chain is None:
         print(f"[{seat}] 这个座位只生成文本、不能改文件。要它出结论请加 --ro；要改文件请用 `aiw write`。", file=sys.stderr)
         return 64
+    # 转发过来的点名座位（带 --no-fallback）在本机不可用时，必须在起任何进程前退回发起端，
+    # 不许用链上的别的座位顶替。66 只表示"没执行"，发起端可以安全地在本机重跑。
+    if role is None and '--no-fallback' in flags and os.environ.get('AIW_NO_FORWARD') == '1':
+        unavailable = named_seat_unavailable(seat)
+        if unavailable:
+            print(f'[ai-worker] 点名座位 {seat} 在本机不可用：{unavailable}；未执行', file=sys.stderr)
+            return RECEIVER_SEAT_UNAVAILABLE
     # The receiver may have different local rows. Never forward a write candidate
     # which this machine would skip because of its readonly ceiling.
     if mode == 'rw':
@@ -3112,6 +3200,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
             print('[ai-worker] 全链没有可写执行方', file=sys.stderr)
             return 1
     # local_only 座位依赖本机独有的服务（如账号池），不转发给执行机。
+    forward_refused = None
+    forward_missing_seat = False
     if '--worktree' not in flags and not runs_local_only(seat):
         try:
             command = forward_command(SEATS)
@@ -3123,6 +3213,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                                   inflight, chain=chain, before_execute=before_execute, prompt=stdin_prompt)
             if rc is not None:
                 return rc
+            forward_refused = attempt.pop('forward_refused', None)
+            forward_missing_seat = attempt.pop('forward_missing_seat', False)
     if seat in errands:
         print(f"[ai-worker] {seat} 是跑腿供应商，请改用 aiw errand", file=sys.stderr)
         return 64
@@ -3142,7 +3234,13 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     seat_cfg = SEATS['seats'].get(seat, {})
     text_fields.update(role=role, task_class="write" if not ro else "draft" if text else "review")
     if seat not in SEATS["seats"] and explicit_chain is None:
-        print(f"[ai-worker] 未知座位 {seat}；可用：{', '.join(SEATS['seats'])}", file=sys.stderr)
+        if forward_missing_seat:
+            detail = f"本机和执行端都没有座位 {seat}；未执行"
+            print(f"[ai-worker] {detail}", file=sys.stderr)
+            ledger({"seat": seat, "actual": seat, "via": call_via(), "kind": "missing_seat",
+                    "detail": forward_refused, "rc": None, "secs": 0})
+        else:
+            print(f"[ai-worker] 未知座位 {seat}；可用：{', '.join(SEATS['seats'])}", file=sys.stderr)
         return 64
     if "--worktree" in flags and (ro or seat_cfg.get("kind") == "agent_use"):
         print("[ai-worker] --worktree 只用于写任务", file=sys.stderr)
@@ -3378,6 +3476,8 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                                 attempt.update(verify_fields)
                             else:
                                 verify_fields = {"verify": {"total": len(verify), "passed": None, "skipped": True}}
+                        if interruption is None:
+                            note_work_outcome(s, r, change_fields.get("changed_files"), actual_ro)
                     finally:
                         if token:
                             finish_substitute(token, success)
@@ -3388,6 +3488,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             "run_dir": r.get("run_dir"),
                             "kind": r["kind"], "rc": r["rc"], "secs": r["secs"], "substituted": s != seat,
                             "err_tail": r["err"][-300:],
+                            **({"forward_refused": forward_refused} if forward_refused else {}),
                             **token_fields})
                     save_usage(r.get("run_dir"), token_fields.get("tokens"))
                 last_result = r

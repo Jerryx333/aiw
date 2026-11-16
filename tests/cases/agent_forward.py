@@ -66,7 +66,22 @@ def forwarding_runs_here_when_it_cannot_carry_the_request():
                 check(not marker.exists(), 'forwarder was asked to run it')
 
 
+def forwarding_named_seat_requires_the_same_name():
+    """点名座位带 exact：远端没有同名行时不得换成等价别名。"""
+    row = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm'}
+    request = describe({'seats': {'picked': row}}, ['picked'], 'ro', '/a', exact={'picked'})
+    check(request['entries'][0].get('exact') is True, request)
+    try:
+        resolve({'seats': {'alias': row}}, request, '/b')
+        check(False, '点名座位被换成远端别名')
+    except ValueError:
+        pass
+    check(resolve({'seats': {'picked': row, 'alias': row}}, request, '/b') == {'picked': 'picked'}, '同名行未保留')
+    check('exact' not in describe({'seats': {'picked': row}}, ['picked'], 'ro', '/a')['entries'][0], '角色链不应要求同名')
+
+
 CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names, forwarding_identity_rejects_ambiguity_and_write_relaxation,
+                                 forwarding_named_seat_requires_the_same_name,
                                  forwarding_runs_here_when_it_cannot_carry_the_request)}
 
 

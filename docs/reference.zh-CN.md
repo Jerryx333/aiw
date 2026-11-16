@@ -6,7 +6,7 @@
 
 可选 `forward.runner_hosts` 指定执行端，例如 `{"forward": {"command": ["<命令>"], "runner_hosts": ["runner-host"]}}`。该字段必须是字符串数组，每个元素去空白后非空；允许空数组。比较时本机 `socket.gethostname()` 和配置值均取第一个 `.` 之前的短名并忽略大小写，配置值可写 FQDN（如 `runner-host.example.invalid`）。转发启用且名单非空时，仅名单内机器进行 freecheck；缺失或空数组保持原行为。`AIW_FORWARD` 只覆盖 command，不改变名单；command 为空或 `AIW_NO_FORWARD=1` 时仍在本机探测。该名单不限制普通派单转发，执行端仍可通过转发命令 rc=69 回退本机。doctor 对非执行端追加「本机非执行端，freecheck 跳过」，不显示名单内容。
 
-四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色先按本机执行的相同规则解析，再构造顶替链；未指定 `--chain` 的点名座位先检查本机 `main_exclude`，再检查本机配置的停用（`disabled: true` 或 `disabled_by_user`）：停用的座位不转发，rc=2，不顶替（执行端看不到本机的停用）；允许远端独有、未列入本机 SEATS 的座位。转发时把本机配置停用的座位（`disabled: true` 或 `disabled_by_user`）和上游带来的 `AIW_SKIP_SEATS` 合在一起，用逗号连成 `AIW_SKIP_SEATS` 交给转发命令；执行端把其中的座位当作停用（带链执行时逐项跳过），所以按角色派单也不会选到发起端停用的座位。没有停用座位时不带这个变量。转发自动携带去重保序的 `--chain seat-a,seat-b,…`；接收端只按这条链尝试，不重解析角色或展开自己的 fallback，未知座位在 stderr 说明并跳过，停用、熔断、每日上限及写入能力检查仍生效。手写 `--chain` 的本地执行语义相同，与 `--no-fallback` 同用时只取链首；链为空或座位名含非法字符时返回 64，不执行。
+四个位置参数的 `aiw <role|seat> <workdir> <timeout> <prompt> ...` 派单及 panel/map 子单均可转发；`--worktree` 单和 doctor、enable、goal、slot、rate、note、status、errand 等子命令不转发。转发前校验跑腿供应商与顶替链（跑腿供应商只能走 `aiw errand`）、通用参数、prompt 和附件，角色先按本机执行的相同规则解析，再构造顶替链；未指定 `--chain` 的点名座位先检查本机 `main_exclude`，再检查本机配置的停用（`disabled: true` 或 `disabled_by_user`）：停用的座位不转发，rc=2，不顶替（执行端看不到本机的停用）；允许远端独有、未列入本机 SEATS 的座位。转发时把本机配置停用的座位（`disabled: true` 或 `disabled_by_user`）和上游带来的 `AIW_SKIP_SEATS` 合在一起，用逗号连成 `AIW_SKIP_SEATS` 交给转发命令；执行端把其中的座位当作停用（带链执行时逐项跳过），所以按角色派单也不会选到发起端停用的座位。没有停用座位时不带这个变量。转发自动携带去重保序的 `--chain seat-a,seat-b,…`；点名座位（非 `write`/`review`/`draft`）只送该座位本身并加 `--no-fallback`，本机备用链只在退回本机后使用。接收端在起任何进程前核对该座位：不存在、配置/用户/派单方停用、入口未安装或熔断时返回退出码 **66**，不换链上其它座位。发起端收到 66 后改在本机执行，并在 stderr 和账本 `forward_refused` 写明原因；本机也没有该座位时返回 64，错误信息写明两台都没有。角色派单仍只按这条链尝试、可顺序顶替，不重解析角色或展开自己的 fallback；链上未知座位在 stderr 说明并跳过，停用、熔断、每日上限及写入能力检查仍生效。启用 `agent-runtime-v1` 时，点名座位的身份描述带 `exact`，远端必须存在同名等价行，不能用别名顶替。手写 `--chain` 的本地执行语义相同，与 `--no-fallback` 同用时只取链首；链为空或座位名含非法字符时返回 64，不执行。
 
 命令使用 argv 调用，不经过 shell：
 
@@ -23,7 +23,7 @@ panel/map 子单追加 `--no-findings`，远端不收集观察记录。panel 保
 
 转发开启时，panel 仍校验未知座位、跑腿供应商、main_exclude、默认名单的 self_seats，以及配置/用户停用和收费保护停用；跳过本机入口脚本/bin 安装和 auth/not_installed 熔断检查，由执行端判断。map 自身不解析角色名，按默认并发规则处理，不做角色对应座位的能力检查；子单由 worker 在转发前按本机规则解析角色；rc=69 回退后沿用已构造的链。未开启转发时，选座行为保持原样。转发复用本机 inflight 生命周期，运行中发布请求座位、panel 分组及本机 run_dir，结束后清理。
 
-退出码 **69 必须表示不可达且尚未排队**，aiw 打印「[ai-worker] 转发不可用（rc=69），改在本机执行」，再沿用已解析的链执行本机流程。命令不存在、不可执行等启动 OSError 同样说明原因并回退。其他退出码是最终结果，不能用 69 表示已经排队或执行后的失败，以免重复执行。写单返回 0 且带 `--verify` 时，在本机 workdir 用现有验收逻辑执行，验收失败返回 4。
+退出码 **69 必须表示不可达且尚未排队**，aiw 打印「[ai-worker] 转发不可用（rc=69），改在本机执行」，再沿用已解析的链执行本机流程。转发协议另保留 **66**：执行端在起任何进程前确认点名座位不可用（不存在、停用、未安装、熔断），没有排队执行，发起端可以安全地改在本机重跑。66 只用于点名座位，不能表示已经执行后的失败。命令不存在、不可执行等启动 OSError 同样说明原因并回退。其他退出码是最终结果，不能用 69 表示已经排队或执行后的失败，以免重复执行。写单返回 0 且带 `--verify` 时，在本机 workdir 用现有验收逻辑执行，验收失败返回 4。
 
 本机 run 目录保存 `task.txt`，命令可写 `output.md` 与 `forward.json`：`{"actual": "远端实际座位", "host": "远端展示名", "tokens": {…}}`。actual、host 均可缺失，只接受字符串；损坏或非对象 JSON 忽略。tokens 可缺失，须与本机账本的 rollout 用量同格式（`input/cached/cache_write/output/reasoning/calls` 非负整数加 `source: "rollout"`），合法时写进本机账本这一行，否则忽略。执行端 aiw 在 codex、claude 或 agent_use 尝试量到精确用量时会在该尝试的 run 目录（成功时「全文」所在目录，失败时「排查」指向的目录）写 `usage.json`：`{"tokens": {…}}`，转发命令可读它填 tokens。未提供 actual 时记原始角色或座位名。最终结果写本机账本并加 `executor: "forward"`、`forward_host`（可空），不写本机熔断、不计顶替配额、不做免费座位保护判定。`output_saved` 以 `output.md` 存在为准，正常成功时由 main 打印本机「全文」路径；评分与周报允许未知实际座位。账本字段详见 [状态契约](state-contract.md#seat-ledgerjsonl)。
 
@@ -577,6 +577,8 @@ python3 tests/mutation_check.py credentials locked  # 只运行指定变异
 本地 `seats.local.json` 可为座位配置 `preflight`（`argv`、`config_file`、`config_mentions`）检查凭据工具；可选字符串 `preflight.unlock_hint` 自定义库锁时派单与 doctor 显示的解锁提示，未配置时显示通用提示。库锁不熔断、不顶替。
 
 CLI 失败分类取输出末尾 15 行，若有 `ERROR:` 开头的行则只匹配这些报错行，排除对话回显；`at capacity` / `overloaded`（不区分大小写）在 locked/auth 之后、quota 之前判为 `transient`，换下一家、不熔断。
+
+同一座位连续 2 次没开工（agent-use 返回 `provider_failed`，或没有产生任何文件改动的 `transient` / `timeout` / `other`）时按 `unavailable` 熔断，时长沿用 `breaker.unavailable_minutes`（默认 30 分钟）。一次成功或其它结果会清零连续计数。计数存在本机 `state/no-work-streak.json`，读改写沿用 `state/.state.lock`；熔断期内的派单沿用现有「熔断中」输出，账本记 `skipped_breaker`。
 
 个人规则可放在 `~/.config/aiw/CLAUDE.personal.md` 和 `~/.config/aiw/AGENTS.personal.md`。建议保存在私人同步仓库，并软链到这些路径，再运行 `install.sh`。公开规则在前，个人规则在后，冲突以个人规则为准。
 

@@ -87,6 +87,45 @@ def forward_protocol():
             check(r.returncode == 0 and row['actual'] == 'codex' and 'tokens' not in row, (bad, row))
 
 
+def forward_named_seat_cannot_be_substituted():
+    """点名座位转发不许执行端换别的座位顶上；角色仍可按链顶替。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        r = sh(cmd, env=env)
+        argv = json.loads((t / 'called').read_text())['argv']
+        check(r.returncode == 0 and '--no-fallback' in argv
+              and argv[argv.index('--chain') + 1] == 'qoder', '点名座位转发包含备用链: ' + str(argv))
+        call = cmd[:]; call[2] = 'review'
+        r = sh(call, env=env)
+        argv = json.loads((t / 'called').read_text())['argv']
+        check(r.returncode == 0 and '--no-fallback' not in argv, argv)
+
+
+def forward_receiver_missing_seat_runs_local():
+    """执行端在起进程前退回点名座位时，本机有该座位就改在本机执行并记账原因。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        r = sh(cmd, env=dict(env, FORWARD_RC='66'))
+        check(r.returncode == 0 and 'qoder ok' in r.stdout, r)
+        check('执行端没有点名座位 qoder' in r.stderr and '改在本机执行' in r.stderr, r)
+        rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
+        check(len(rows) == 1 and rows[0]['actual'] == 'qoder' and rows[0]['kind'] == 'ok'
+              and '执行端没有点名座位 qoder' in rows[0].get('forward_refused', ''), rows)
+        check('executor' not in rows[0], rows[0])
+
+
+def forward_receiver_missing_seat_both_absent():
+    """本机也没有点名座位时报错，说明两台都没有。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, script = fixture(t)
+        call = cmd[:]; call[2] = 'remote-only'
+        r = sh(call, env=dict(env, FORWARD_RC='66'))
+        check(r.returncode == 64 and '本机和执行端都没有座位 remote-only' in r.stderr, r)
+        rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
+        check(len(rows) == 1 and rows[0]['seat'] == 'remote-only' and rows[0]['kind'] == 'missing_seat'
+              and '执行端没有点名座位 remote-only' in rows[0]['detail'], rows)
+
+
 def forward_fallback_and_exclusions():
     with tempfile.TemporaryDirectory() as td:
         t = Path(td); cmd, env, wd, script = fixture(t)
@@ -421,6 +460,36 @@ def receiver_explicit_chain():
         run('seat-a,seat-b,seat-c', ['seat-c'])
 
 
+def receiver_named_seat_unavailable_returns_66():
+    """执行端在起进程前识别点名座位缺失、停用或熔断，返回专用 rc，不顶替。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, local, config = chain_fixture(t)
+        env.update(AIW_NO_FORWARD='1')
+        state = Path(env['AIW_STATE'])
+        log = t / 'chain.log'
+
+        def run(seat):
+            log.unlink(missing_ok=True)
+            call = cmd[:6]; call[2] = seat
+            r = sh(call + ['--ro', '--no-fallback'], env=env)
+            calls = log.read_text().splitlines() if log.exists() else []
+            check(not (t / 'called').exists(), '接收端再次转发')
+            return r, calls
+
+        r, calls = run('seat-missing')
+        check(r.returncode == 66 and calls == [] and '本机座位表中没有这个座位' in r.stderr, r)
+        config['seats']['seat-a']['disabled'] = True
+        local.write_text(json.dumps(config))
+        r, calls = run('seat-a')
+        check(r.returncode == 66 and calls == [] and '已停用' in r.stderr, r)
+        del config['seats']['seat-a']['disabled']
+        local.write_text(json.dumps(config))
+        state.mkdir(parents=True, exist_ok=True)
+        (state / 'breaker.json').write_text(json.dumps({'seat-a': {'until': 9999999999, 'reason': 'unavailable'}}))
+        r, calls = run('seat-a')
+        check(r.returncode == 66 and calls == [] and '熔断中' in r.stderr, r)
+
+
 def chain_invalid_rejected():
     import ai_worker as worker
     try:
@@ -451,7 +520,7 @@ def chain_structured_retry():
               f'结构化重交没有钉在实际座位：{r.stdout}{r.stderr}')
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt, forward_resolved_chain, receiver_explicit_chain, chain_invalid_rejected, chain_structured_retry)}
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_named_seat_cannot_be_substituted, forward_receiver_missing_seat_runs_local, forward_receiver_missing_seat_both_absent, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt, forward_resolved_chain, receiver_explicit_chain, receiver_named_seat_unavailable_returns_66, chain_invalid_rejected, chain_structured_retry)}
 
 def forward_write_filters_local_readonly_backups():
     with tempfile.TemporaryDirectory() as td:
@@ -459,8 +528,10 @@ def forward_write_filters_local_readonly_backups():
         config['seats']['seat-b'].pop('ro_only')
         config['seats']['seat-b']['force_mode'] = 'ro'
         config['fallback']['seat-a'] = ['seat-b', 'seat-c']
+        config['roles']['default'] = {'write': ['seat-a'], 'review': ['seat-b'], 'draft': ['seat-b']}
         local.write_text(json.dumps(config))
         cmd.remove('--ro')
+        cmd[2] = 'write'
         r = sh(cmd, env=env)
         check(r.returncode == 0, r.stderr)
         argv = json.loads((t / 'called').read_text())['argv']
@@ -475,8 +546,10 @@ def forward_write_filters_local_text_backups():
         config['seats']['seat-b'].pop('ro_only')
         config['seats']['seat-b'].update(kind='agent_use', provider='example')
         config['fallback']['seat-a'] = ['seat-b', 'seat-c']
+        config['roles']['default'] = {'write': ['seat-a'], 'review': ['seat-b'], 'draft': ['seat-b']}
         local.write_text(json.dumps(config))
         cmd.remove('--ro')
+        cmd[2] = 'write'
         r = sh(cmd, env=env)
         check(r.returncode == 0, r.stderr)
         argv = json.loads((t / 'called').read_text())['argv']

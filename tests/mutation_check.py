@@ -276,10 +276,15 @@ MUTATIONS.extend([
 
 MUTATIONS.extend([
     {'id': 'forward-resolved-chain', 'expect': '转发链不符合本机解析结果',
-     'invariant': '转发必须携带本机解析的完整链', 'file': 'ai_worker.py',
-     'old': "argv += ['--chain', ','.join(chain)]",
-     'new': "argv += ['--chain', chain[0]]",
+     'invariant': '角色转发必须携带本机解析的完整链', 'file': 'ai_worker.py',
+     'old': "argv += ['--chain', ','.join(wire_chain)]",
+     'new': "argv += ['--chain', wire_chain[0]]",
      'tests': ['forward_resolved_chain'], 'location': 'forward_dispatch'},
+    {'id': 'forward-named-no-substitution', 'expect': '点名座位转发包含备用链',
+     'invariant': '点名座位不得由执行端换成别的座位', 'file': 'ai_worker.py',
+     'old': '    wire_chain = [seat] if named else chain',
+     'new': '    wire_chain = chain',
+     'tests': ['forward_named_seat_cannot_be_substituted'], 'location': 'forward_dispatch'},
     {'id': 'receiver-chain-boundary', 'expect': '显式链执行越界或顺序错误',
      'invariant': '接收端不得展开自己的 fallback', 'file': 'ai_worker.py',
      'old': '        chain = explicit',

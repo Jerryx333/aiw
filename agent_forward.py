@@ -52,7 +52,7 @@ def fingerprint(row, home):
     return digest(value)
 
 
-def describe(config, chain, mode, home):
+def describe(config, chain, mode, home, exact=()):
     if mode not in ('rw', 'ro', 'text') or not 1 <= len(chain) <= 64 or len(set(chain)) != len(chain):
         raise ValueError('agent-forward-invalid-chain')
     result = []
@@ -61,7 +61,11 @@ def describe(config, chain, mode, home):
         if not NAME.fullmatch(name) or row.get('local_only'):
             raise ValueError('agent-forward-local-only')
         effective = max((mode, ceiling(row)), key=('rw', 'ro', 'text').index)
-        result.append({'name': name, 'digest': fingerprint(row, home), 'mode': effective})
+        entry = {'name': name, 'digest': fingerprint(row, home), 'mode': effective}
+        if name in exact:
+            # 点名座位必须由同名行执行；不允许远端用等价别名顶替。
+            entry['exact'] = True
+        result.append(entry)
     return {'protocol': PROTOCOL, 'mode': mode, 'entries': result}
 
 
@@ -74,7 +78,12 @@ def resolve(config, request, home):
         raise ValueError('agent-forward-invalid-description')
     mapping = {}
     for entry in entries:
-        if not isinstance(entry, dict) or set(entry) != {'name', 'digest', 'mode'} or not isinstance(entry['name'], str) or not NAME.fullmatch(entry['name']) or entry['name'] in mapping or entry['mode'] not in ('rw', 'ro', 'text') or not isinstance(entry['digest'], str) or not re.fullmatch('[0-9a-f]{64}', entry['digest']):
+        if (not isinstance(entry, dict) or not {'name', 'digest', 'mode'} <= set(entry)
+                or set(entry) - {'name', 'digest', 'mode', 'exact'}
+                or ('exact' in entry and type(entry['exact']) is not bool)
+                or not isinstance(entry['name'], str) or not NAME.fullmatch(entry['name'])
+                or entry['name'] in mapping or entry['mode'] not in ('rw', 'ro', 'text')
+                or not isinstance(entry['digest'], str) or not re.fullmatch('[0-9a-f]{64}', entry['digest'])):
             raise ValueError('agent-forward-invalid-entry')
         candidates = []
         for name, row in config['seats'].items():
@@ -94,6 +103,9 @@ def resolve(config, request, home):
                 continue
         if entry['name'] in candidates:
             candidates = [entry['name']]
+        elif entry.get('exact'):
+            # 点名座位在远端没有同名等价行：不改用别名，交给发起端在本机执行。
+            raise ValueError('agent-forward-no-unique-equivalent')
         if len(candidates) != 1 or candidates[0] in mapping.values():
             raise ValueError('agent-forward-no-unique-equivalent')
         mapping[entry['name']] = candidates[0]
