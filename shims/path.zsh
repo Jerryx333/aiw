@@ -8,4 +8,11 @@ if [[ -n "${CLAUDECODE-}${AIW_NESTED-}${CODEX_THREAD_ID-}${CODEX_SANDBOX-}" ]]; 
   [[ -z "${AIW_BUILD_JOBS-}" ]] && (( $(sysctl -n hw.ncpu 2>/dev/null || echo 0) >= 2 )) && export AIW_BUILD_JOBS=$(( $(sysctl -n hw.ncpu) / 2 ))
   # 绕过本目录直接调到 go 的（如 PATH 前面又加了 /opt/homebrew/bin）也限并行；命令行的 -p 优先。
   [[ -n "${AIW_BUILD_JOBS-}" && " ${GOFLAGS-} " != *" -p="* ]] && export GOFLAGS="${GOFLAGS:+$GOFLAGS }-p=$AIW_BUILD_JOBS"
+  # 整个 agent shell 降到低优先级：tsc、npm/pytest、派单验收等不经上面包装的命令也让位给主人的前台 App。
+  # 用绝对值（不用 -n 增量），嵌套 shell 不会越降越低；已经更低的 renice 会被拒绝，忽略即可。
+  # 标记随环境传给子进程，子 shell 已继承优先级，不再重复 fork。AIW_AGENT_NICE=0 关闭。
+  if [[ "${AIW_AGENT_NICE-10}" != 0 && "${AIW_AGENT_NICED-}" != 1 ]]; then
+    /usr/bin/renice "${AIW_AGENT_NICE-10}" -p $$ >/dev/null 2>&1
+    export AIW_AGENT_NICED=1
+  fi
 fi

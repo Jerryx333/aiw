@@ -393,6 +393,17 @@ def slot_build_gate_path():
     path, exported, goflags = source(PATH=f"/usr/bin:{shims}:/bin", CLAUDECODE="1")
     check(path == f"{shims}:/usr/bin:/bin", f"挪到最前且不重复：{path}")
     check(source() == ["/usr/bin:/bin", "", ""], "主人终端不动")
+    # agent shell 降到 nice 10，子进程继承；主人终端和 AIW_AGENT_NICE=0 不降。
+    def nice(**env):
+        base = {"HOME": os.environ.get("HOME", "/tmp"), "PATH": "/usr/bin:/bin"}
+        result = subprocess.run(["zsh", "-fc", f'source "{script}"; /bin/ps -o nice= -p $$'],
+                                env=dict(base, **env), capture_output=True, text=True, timeout=4)
+        return int(result.stdout.strip())
+    start = os.getpriority(os.PRIO_PROCESS, 0)
+    check(nice(CLAUDECODE="1") == max(start, 10), "agent shell 降到 nice 10")
+    check(nice() == start, "主人终端不降")
+    check(nice(CLAUDECODE="1", AIW_AGENT_NICE="0") == start, "AIW_AGENT_NICE=0 关闭")
+    check(nice(CLAUDECODE="1", AIW_AGENT_NICED="1") == start, "已继承时不重复 renice")
 
 
 CASES = {name: value for name, value in globals().copy().items()

@@ -346,7 +346,7 @@ aiw slot --status
 
 本机执行的写任务（非 `--ro`、非嵌套）另有一组派单名额：池名 `write`，与测试名额同目录、互不占用，`AIW_MAX_WRITES` 设上限（默认 4，非法值按 4 并提示）。占满时排队，排队和内存等待共用 1800 秒上限，到期照跑；持有派单名额不设置 `AIW_SLOT_HELD`，执行方自己跑的 `aiw slot` 仍要排测试名额。转发到别的主机执行的单不占本机派单名额，回本机跑验收时照常排测试名额。
 
-编译准入：`shims/` 里的 `swift`、`xcodebuild`、`go` 是同一个包装（`shims/gate.sh`）。把这个目录放在 PATH 最前，`swift build`/`swift test`、xcodebuild 构建、`go build`/`go test`/`go vet`/`go install` 和 `go tool <x> build`（如 Heya 的 `go tool mygo build`）就先排上面的测试名额（内存压力 ≥2 时等）；没写 `-j`/`--jobs`/`-jobs`/`-p` 时补上并行编译数（`AIW_BUILD_JOBS`，默认核数一半；`go tool … build` 不补，靠 GOFLAGS）。`swift run`、`go run`/`version`/`env`/`mod`、`go tool mygo dev`、`xcodebuild -version`/`-list`/`-showBuildSettings` 等直接放行。已持有名额（`AIW_SLOT_HELD=1`）只限并行不排队，`AIW_BUILD_GATE=0` 原样放行。包装从 PATH 去掉自己的目录后再找真命令。用途是不靠调用方自觉：`~/.zshenv`、`~/.zprofile`、`~/.zshrc` 末尾各引用一次 `shims/path.zsh`（path_helper 和 `.zshrc` 都会把别的目录排到前面），有 `CLAUDECODE`（Claude Code）、`AIW_NESTED`（执行方）或 `CODEX_THREAD_ID`/`CODEX_SANDBOX`（Codex，待核实）时把目录挪到 PATH 最前，并导出 `AIW_SHIMS`（会自己改 PATH 的脚本改完再把它放回最前）、`AIW_BUILD_JOBS`（沙箱里读不到核数）和 `GOFLAGS=-p=<核数一半>`（绕过包装直接调到 go 的也限并行，命令行 `-p` 优先）；主人自己的终端不受影响。只对之后新开的会话生效。
+编译准入：`shims/` 里的 `swift`、`xcodebuild`、`go` 是同一个包装（`shims/gate.sh`）。把这个目录放在 PATH 最前，`swift build`/`swift test`、xcodebuild 构建、`go build`/`go test`/`go vet`/`go install` 和 `go tool <x> build`（如 Heya 的 `go tool mygo build`）就先排上面的测试名额（内存压力 ≥2 时等）；没写 `-j`/`--jobs`/`-jobs`/`-p` 时补上并行编译数（`AIW_BUILD_JOBS`，默认核数一半；`go tool … build` 不补，靠 GOFLAGS）。`swift run`、`go run`/`version`/`env`/`mod`、`go tool mygo dev`、`xcodebuild -version`/`-list`/`-showBuildSettings` 等直接放行。已持有名额（`AIW_SLOT_HELD=1`）只限并行不排队，`AIW_BUILD_GATE=0` 原样放行。包装从 PATH 去掉自己的目录后再找真命令。用途是不靠调用方自觉：`~/.zshenv`、`~/.zprofile`、`~/.zshrc` 末尾各引用一次 `shims/path.zsh`（path_helper 和 `.zshrc` 都会把别的目录排到前面），有 `CLAUDECODE`（Claude Code）、`AIW_NESTED`（执行方）或 `CODEX_THREAD_ID`/`CODEX_SANDBOX`（Codex，待核实）时把目录挪到 PATH 最前，并导出 `AIW_SHIMS`（会自己改 PATH 的脚本改完再把它放回最前）、`AIW_BUILD_JOBS`（沙箱里读不到核数）和 `GOFLAGS=-p=<核数一半>`（绕过包装直接调到 go 的也限并行，命令行 `-p` 优先），并把 shell 本身降到 nice 10（绝对值，子进程继承；`tsc`、npm/pytest 等不经包装的命令也让位给前台 App；`AIW_AGENT_NICE=<值>` 改档位，`=0` 关闭）；主人自己的终端不受影响。只对之后新开的会话生效。
 
 `aiw sync` 先照旧对 aiw 执行 `git pull --ff-only`，失败时保留其退出码；成功后对已存在的 agent-use 和 agent-use-adapters Git 仓库分别快进更新，后两者失败只警告。目录覆盖变量与安装相同。
 
@@ -565,6 +565,7 @@ python3 tests/mutation_check.py credentials locked  # 只运行指定变异
 
 ## 变更记录
 
+- 2026-11-17 agent 会话的 shell 统一降到 nice 10：多个会话同时跑 `tsc`、`go test`、派单时负载冲到 300 多、前台卡顿，名额闸门只管 swift/xcodebuild/go。
 - 2026-11-15 普通派单新增 `--background`：立即返回任务编号，结束（成功、失败、超时）后用 ocs 通知并唤醒发起会话；新增 `aiw bg status|result|list`（#63）。
 - 2026-10-14 新增 `aiw slot` 全机测试名额、内存压力等待、默认 nice +10 和限线程，后台 QoS 可选；全量 harness 自动复用，定向用例隔离名额目录。
 - 2026-10-30 新增编译准入 `shims/`：agent 会话里的 swift/xcodebuild 构建默认排测试名额并限并行编译数。起因是多座位并行时各家在本机反复编译测试，加上常驻会话，内存超出物理内存、swap 用满，一次 `swift build` 从 20 秒拖到 13 分钟。
