@@ -34,17 +34,20 @@ def forward_protocol():
     with tempfile.TemporaryDirectory() as td:
         t = Path(td); cmd, env, wd, script = fixture(t)
         (wd / 'attachment.txt').write_text('attachment')
+        r = sh(cmd + ['--net', '--no-net'], env=env)
+        check(r.returncode == 64 and '不能同时使用' in r.stderr and not (t / 'called').exists(), r)
         for role, mode, flag in [('review', 'ro', '--ro'), ('draft', 'text', '--text'), ('write', 'write', None)]:
             call = cmd[:6]; call[2] = role
             call += ['--attach', 'attachment.txt', '--effort', 'high', '--no-findings', '--no-fallback']
             if role == 'write':
-                call += ['--verify', 'echo verified > verified', '--verify-timeout', '5']
+                call += ['--no-net', '--verify', 'echo verified > verified', '--verify-timeout', '5']
             r = sh(call, env=env)
             check(r.returncode == 0 and 'forward stdout' in r.stdout and 'forward stderr' in r.stderr, r)
             data = json.loads((t / 'called').read_text()); argv = data['argv']; child = data['env']
             check(argv[:5] == ['fixed-arg', role, str(wd.resolve()), '10', str((t / 'prompt.md').resolve())], argv)
             check(argv[-2:] == ['--attach', str((wd / 'attachment.txt').resolve())], argv)
             check('--verify' not in argv and '--verify-timeout' not in argv, argv)
+            check(('--no-net' in argv) == (role == 'write'), argv)
             check(flag is None or flag in argv, argv)
             check('AIW_FORWARD_GROUP' not in child, child)
             check(child['AIW_NO_FORWARD'] == '1' and child['AIW_MAIN'] == 'claude' and child['AIW_FORWARD_MODE'] == mode, child)

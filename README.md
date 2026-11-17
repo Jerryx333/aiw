@@ -111,7 +111,7 @@ Medians from one week on the author's machine: code changes about 4 minutes (Cod
 <details>
 <summary>Will it mess up my repository?</summary>
 
-When write resolves to Codex, code-change work runs in the Codex sandbox: it can write only to the project directory (in a git worktree, also the Git directories `git add` needs) and has no network by default. When it finishes, it lists the changed files. Changes stay in your working tree for the main conversation to review before committing. With Claude only, claude-write uses restricted mode and a sandbox to edit workspace files, with no git add/commit. Read-only work cannot change files.
+When write resolves to Codex, code-change work runs in the Codex sandbox: it can write only to the project directory (in a git worktree, also the Git directories `git add` needs) and has network access and local ports enabled by default (`--no-net` disables them for one assignment). When it finishes, it lists the changed files. Changes stay in your working tree for the main conversation to review before committing. With Claude only, claude-write uses restricted mode and a sandbox to edit workspace files, with no git add/commit. Read-only work cannot change files.
 
 </details>
 
@@ -158,7 +158,7 @@ If the rules feel too forceful, override them with personal rules, remove `@~/.c
 | `aiw review . 900 task.txt` | Read-only review, finding code |
 | `aiw draft . 600 task.txt` | Drafts, rewrites, summaries |
 | `aiw doctor` | Shows which model each role resolves to and checks the install |
-| `aiw <seat> . 900 task.txt` | Assign to a named seat; common flags: `--ro` read-only, `--worktree` writes in an independent worktree, `--net` opens the network for Codex writes; details in the [reference manual](docs/reference.zh-CN.md#命令) (Chinese) |
+| `aiw <seat> . 900 task.txt` | Assign to a named seat; common flags: `--ro` read-only, `--worktree` writes in an independent worktree, `--no-net` disables network access for Codex writes (enabled by default; `--net` remains accepted); details in the [reference manual](docs/reference.zh-CN.md#命令) (Chinese) |
 | `aiw panel` | Collect independent opinions: `aiw panel . 600 task.txt --prior prior.md`; pass your own judgment with `--prior`, then accept, reject or defer each opinion, without majority voting |
 | `aiw map` | Apply one instruction per file: `aiw map . 600 task.txt src/a.py src/b.py` |
 | `aiw goal init / verify` | Create a checklist with `aiw goal init docs/goals/demo.json`; edit tasks, verification commands and paths, then run `aiw goal verify docs/goals/demo.json --full` |

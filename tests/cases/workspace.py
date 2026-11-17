@@ -41,17 +41,18 @@ def workspace_access_ro_rw():
     with tempfile.TemporaryDirectory() as td:
         t = Path(td); cmd, env, wd = fixture(t)
         (wd / 'code.txt').write_text('repository material')
-        for role, readonly in [('workspace', True), ('review', True), ('workspace', False)]:
-            cmd[2] = role
-            flags = ['--ro'] if readonly and role == 'workspace' else []
-            r = sh(cmd[:-1] + flags + ['--net', '--attach', 'code.txt', '--no-findings'], env=env)
-            check(r.returncode == 0 and '--net 不生效' in r.stderr, r.stderr)
-            run_dir = sorted((t / 'state/runs').iterdir(), key=lambda p: p.stat().st_mtime_ns)[-1]
-            prompt = (run_dir / 'task.txt').read_text()
-            check('code.txt |' in prompt and 'repository material' not in prompt, prompt)
-            call = calls(t)[-1]; argv = call['argv']
-            check(call['access'] == ('ro' if readonly else 'rw') and call['workdir'] == str(wd.resolve()), call)
-            check('--workdir' in argv and '--access' in argv and '--require-no-tools' not in argv, call)
+        for network_flag in ('--net', '--no-net'):
+            for role, readonly in [('workspace', True), ('review', True), ('workspace', False)]:
+                cmd[2] = role
+                flags = ['--ro'] if readonly and role == 'workspace' else []
+                r = sh(cmd[:-1] + flags + [network_flag, '--attach', 'code.txt', '--no-findings'], env=env)
+                check(r.returncode == 0 and f'{network_flag} 不生效' in r.stderr, r.stderr)
+                run_dir = sorted((t / 'state/runs').iterdir(), key=lambda p: p.stat().st_mtime_ns)[-1]
+                prompt = (run_dir / 'task.txt').read_text()
+                check('code.txt |' in prompt and 'repository material' not in prompt, prompt)
+                call = calls(t)[-1]; argv = call['argv']
+                check(call['access'] == ('ro' if readonly else 'rw') and call['workdir'] == str(wd.resolve()), call)
+                check('--workdir' in argv and '--access' in argv and '--require-no-tools' not in argv, call)
         import ai_worker as w
         with patch.object(w, 'SEATS', {'seats': {'workspace': {'kind': 'agent_use', 'workspace': True, 'ro_only': True}}}):
             check(w.role_candidate_reason('write', 'workspace') is not None, 'ro_only allowed write')
@@ -123,11 +124,12 @@ def workspace_explicit_text():
 def workspace_text_net_conflict():
     with tempfile.TemporaryDirectory() as td:
         t = Path(td); cmd, env, _ = fixture(t); cmd.remove('--ro')
-        for seat, flags in [('workspace', ['--text']), ('draft', []),
-                            ('text', ['--text']), ('codex', ['--text'])]:
-            cmd[2] = seat
-            r = sh(cmd + flags + ['--net'], env=env)
-            check(r.returncode == 64 and '不能与 --ro' in r.stderr, r.stderr)
+        for network_flag in ('--net', '--no-net'):
+            for seat, flags in [('workspace', ['--text']), ('draft', []),
+                                ('text', ['--text']), ('codex', ['--text'])]:
+                cmd[2] = seat
+                r = sh(cmd + flags + [network_flag], env=env)
+                check(r.returncode == 64 and '不能与 --ro' in r.stderr, r.stderr)
         check(not (t / 'calls').exists(), 'conflicting dispatch executed')
 
 

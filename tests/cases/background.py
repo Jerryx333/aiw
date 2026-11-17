@@ -183,6 +183,22 @@ def background_lost_supervisor():
         check(r.returncode == 64 and not (folder / "stdout.log").exists(), "被外包的会话不能起监工")
 
 
+def background_codex_no_net():
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        args = t / "args"
+        env, wd, prompt = fixture(t, FAKE_CODEX_ARGS=str(args))
+        r = aiw("codex", str(wd), "30", str(prompt), "--no-net", "--no-fallback",
+                "--background", "--no-notify", env=env)
+        check(r.returncode == 0, r.stdout + r.stderr)
+        data = finished(t, job_id(r.stdout))
+        check(data["state"] == "succeeded", str(data))
+        check('sandbox_workspace_write.network_access=' not in args.read_text(), args.read_text())
+        row = json.loads((t / 'state/seat-ledger.jsonl').read_text().splitlines()[-1])
+        task = (Path(row['run_dir']) / 'task.txt').read_text()
+        check('本单不能联网、不能监听本地端口（--no-net）' in task, task)
+
+
 def background_address_and_result_path():
     sys.path.insert(0, str(REPO))
     import background as b
@@ -203,4 +219,5 @@ CASES = {case.__name__: case for case in (
     background_no_notify_and_guards,
     background_lost_supervisor,
     background_address_and_result_path,
+    background_codex_no_net,
 )}

@@ -50,7 +50,7 @@ AIW_MAIN=claude aiw write . 1200 /tmp/aiw-doc-task.txt
 
 涉及规则或数据字段时附原文和 `path:line`，不要只给转述。执行方发现原文与转述不一致，应按原文理解并回报。workspace agent_use 座位可自行读仓库；非 workspace 文本座位不会自动读仓库，用 `--attach` 带材料；发送前检查正文里的敏感数据，文件安全检查不会替你识别所有密钥。
 
-`--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 同用返回 64。
+`--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 或 `--no-net` 同用返回 64。
 
 ## 产出当待审稿
 

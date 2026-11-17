@@ -15,7 +15,7 @@ command + [原始 role 或 seat, workdir 绝对路径, timeout, prompt 绝对路
            --chain 本机候选链, 透传开关..., --attach 附件绝对路径, ...]
 ```
 
-透传 `--ro`、`--text`、`--net`、`--no-fallback`、`--no-findings`、`--effort <值>`；review 补 `--ro`，draft 补 `--text`（隐含只读）。附件沿用本机安全校验并转绝对路径。`--verify` 与 `--verify-timeout` 留在本机，不传给命令。stdout/stderr 直接继承，不捕获；SIGINT/SIGTERM 传递给命令。
+透传 `--ro`、`--text`、`--net`、`--no-net`、`--no-fallback`、`--no-findings`、`--effort <值>`；review 补 `--ro`，draft 补 `--text`（隐含只读）。附件沿用本机安全校验并转绝对路径。`--verify` 与 `--verify-timeout` 留在本机，不传给命令。stdout/stderr 直接继承，不捕获；SIGINT/SIGTERM 传递给命令。
 
 环境继承当前环境，另设 `AIW_NO_FORWARD=1` 防递归、`AIW_FORWARD_MODE=write|ro|text`（text 优先，其次显式只读、review 或已知只读座位，否则 write）、`AIW_FORWARD_RUN_DIR=<本机新建的 run 目录>`、`AIW_MAIN=<main_agent()>`（无有效身份时不设）。命令自行传输文件与回传产出；aiw 只访问本机文件。panel/map 子单另设 `AIW_FORWARD_GROUP=<AIW_PANEL_DIR 或 AIW_MAP_DIR 的绝对路径>`，供转发命令对同一批子单共享一次工作区同步；direct 单不设此变量（即使父环境带有也会移除）。
 
@@ -290,7 +290,7 @@ agent_use 座位通过本地配置接入 [agent-use](https://github.com/Jerryx33
 `aiw off` 关闭派单至本地时区次日 00:00；`aiw off 30m|2h|3d` 指定时长，`aiw off forever` 关闭直到 `aiw on`。`aiw status` 查看状态，off/on 后也会打印状态。状态保存在 `$AIW_STATE/dispatch.json`（默认仓库 `state/dispatch.json`），过期或损坏视为开启。关闭时钩子暂停派单和缓冲区提示，保留上下文提示；「[派单已关闭]」提示只在会话第一条消息和命中派单规则的消息上注入（已提示的会话记在 `$AIW_STATE/off-notified.json`，两天后过期），其余轮次不占上下文。直接调用 `aiw write/review/draft/panel/goal` 仍可执行。
 
 ```
-aiw <seat> <workdir> <timeout_s> <prompt_file> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--attach 文件 ...]
+aiw <seat> <workdir> <timeout_s> <prompt_file> [--ro] [--text] [--worktree] [--net | --no-net] [--no-fallback] [--attach 文件 ...]
 aiw panel <workdir> <timeout_s> <prompt_file> [seat ...] [--attach 文件 ...] [--prior 文件] [--free] [--full]
 aiw map <workdir> <timeout_s> <prompt_file> <文件 ...> [--seat 座位] [--jobs N]  # 默认 map_default=draft，并发 3，summary.json 汇总
 aiw <seat> … --schema 结果.schema.json [--json]  # 结构化结果：按 JSON Schema 交、aiw 校验、不合格同座位重交一次；--json 时 stdout 只有 JSON
@@ -388,7 +388,7 @@ Claude 派单钩子检查也识别已启用的 `aiw@…` 插件提供的 `UserPr
 
 会诊后填写目录中的 `adjudication.md`：每条关键意见标接受/驳回（理由或证据）/暂缓（写明等什么），不以多数票收敛。未提供 `--prior` 仅提醒，不改变退出码；文件读不到返回 64。
 
-worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`（入口另认 `--background --no-notify`，见下节），panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
+worker 只接受 `--ro --text --worktree --net --no-net --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`（入口另认 `--background --no-notify`，见下节），panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
 
 `aiw write . 1200 task.txt --worktree`（点名写座位也可用）：只用于写任务，与 `--ro`、review/draft 或只读座位同用返回 64；workdir 必须在有 HEAD 提交的 Git 仓库内。
 从当前 HEAD 创建 `aiw/<run-id>` 分支及 `<STATE>/worktrees/<run-id>`（同名分支返回 64，不覆盖）；子目录映射到同一相对路径，写锁、顶替链、提示词、沙箱与改动统计均使用新目录。未提交改动不会带入，stderr 最多列 10 个文件。macOS 上建好后把源仓库里所有被 Git 忽略的文件和目录（`.env`、`node_modules`、构建缓存等，软链按软链本身）用 clonefile 写时复制到 worktree 同一位置，不用重装依赖、不占额外空间、改动不影响源目录；含 git worktree 的目录（如 aiw 自己的 `<STATE>`）不复制。复制失败（如跨盘）只提示，不影响派单。带 `--attach` 时先在原 workdir 按全部附件规则预检；附件未跟踪、已修改或已暂存（相对 HEAD 有任何差异）返回 64，提示先提交或去掉 `--worktree`，不创建 worktree、分支或元数据；通过后在 worktree 读取对应已提交文件。
@@ -401,11 +401,11 @@ worker 只接受 `--ro --text --worktree --net --no-fallback --chain --no-findin
 
 验收在实际工作目录运行；带 `--worktree` 时为任务 worktree 中对应子目录，在 worktree 汇报和无改动清理之前运行。验收产生的未跟踪文件计为改动，因此会保留 worktree。stdout 在执行方正文之后追加精简「aiw 验收（主会话环境执行）」结果块：逐条 rc、耗时、最多 120 字符的命令，失败输出最后 40 行（单条最多 1500 字符），通过数与全文路径；完整命令、rc、耗时及输出归档到成功尝试的 `<run_dir>/verify.txt`。成功尝试账本行增加 `verify: {"total": N, "passed": M, "secs": 秒}`；跳过时记录 `{"total": N, "passed": null, "skipped": true}`。未带 `--verify` 时账本不增加字段，旧行为不变。
 
-`--net` 默认不开，只对 `adapter="codex"` 座位的写单有效，在 prompt 前添加 `-c sandbox_workspace_write.network_access=true`，开放网络和本地端口；与 `--ro`（含只读座位）同用或用于非 codex 座位返回 64 并说明。 claude-write 默认无网络；其他写座位能否联网由各自沙箱决定。Codex 写座位的测试要起本地服务或联网时加 `--net`。
+`adapter="codex"` 且使用 `workspace-write` 沙箱的写单默认在 prompt 前添加 `-c sandbox_workspace_write.network_access=true`，开放网络和本地端口。`--no-net` 按单关闭：不添加该网络 override，使用隔离 CODEX_HOME 的沙箱默认网络限制（若主动启用共享 home、隔离 home 初始化失败回退共享配置，或座位自带网络配置，则仍取决于该配置，不强制写入 false）；旧 `--net` 继续接受，等同默认。两者同用返回 64；任一开关与 `--ro`（含只读座位、`--text`、写配置为 `read-only` 的座位）同用或用于非 Codex 座位返回 64 并说明，供应商 workspace 座位除外（提示后忽略）。顶替时按实际执行座位应用：Codex 写单沿用本单网络选择，不适用的座位提示后忽略显式开关。claude-write 的网络沙箱限制保持原样；其他写座位能否联网由各自沙箱决定。
 
 `adapter="codex"` 写单在 linked worktree 中自动添加 `-c sandbox_workspace_write.writable_roots=[...]`（TOML 字符串数组）。通过 `git rev-parse --git-dir` 与 `--git-common-dir` 探测，要求 git-dir 的 realpath 位于 `<common-dir>/worktrees/` 下，且 git-dir 和 objects 本身不是软链；只包含 worktree 私有 git-dir 和 `<common-dir>/objects` 的 realpath，供 `git add` 写索引及对象；不开放整个共享 `.git`，hooks/config/refs 保持不可写。普通仓库、Git 探测失败或只读单不添加。`git commit` 及其它改 refs 的操作会被沙箱拒绝，执行方不要尝试，改动留在暂存区，由主会话提交。
 
-`adapter="codex"` 座位的派单在 prompt 末尾、观察记录要求之前固定追加提醒（panel 也有，文本座位没有）：写单说明默认不能联网、不能监听本地端口，并提示需要时由主会话加 --net 重派，只能写工作目录及明确开放的 worktree Git 目录；本单用了 `--net` 则说明网络和本地端口已开放。当 `worktree_writable_roots(workdir)` 非空时，写单另加「本目录是 linked worktree，git add 可用；git commit 及其它改 refs 的操作会被沙箱拒绝，不要尝试，改动留在暂存区，由主会话提交。」普通仓库写单及只读单不加该句。验收因沙箱失败不得绕过或改测试迁就，回答须列「需主会话补跑」小节，写出命令和失败原因。写单和只读单都提醒：规则、数据字段含义的转述以原文为准，发现不符按原文理解，并在回答中指出不符之处（附 path:line）。
+`adapter="codex"` 座位的派单在 prompt 末尾、观察记录要求之前固定追加提醒（panel 也有，文本座位没有）：Codex workspace-write 写单说明默认已开放网络和本地端口，只能写工作目录及明确开放的 worktree Git 目录；本单用了 `--no-net` 则说明不能联网、不能监听本地端口。当 `worktree_writable_roots(workdir)` 非空时，写单另加「本目录是 linked worktree，git add 可用；git commit 及其它改 refs 的操作会被沙箱拒绝，不要尝试，改动留在暂存区，由主会话提交。」普通仓库写单及只读单不加该句。验收因沙箱失败不得绕过或改测试迁就，回答须列「需主会话补跑」小节，写出命令和失败原因。写单和只读单都提醒：规则、数据字段含义的转述以原文为准，发现不符按原文理解，并在回答中指出不符之处（附 path:line）。
 
 `--allow-nested` 只在主会话的派单说明明确允许时使用；被外包的会话在沙箱里调用其他座位可能因读不到登录状态而误判认证失败、触发误熔断。
 
@@ -596,7 +596,7 @@ Claude 在 aiw 引入行后引入 `CLAUDE.personal.md`；文件不存在时不�
 
 当前公开默认有 `codex`、`codex-sol`、`claude`、`claude-write` 四个 CLI 座位，默认顶替链均为空。`panel_default` 为 `["codex-sol", "claude"]`，按 `self_seats` 排除主会话；`panel_free` 为空。`agent_use` 座位通过本地配置接入，并依赖本机安装的适配器，公开 agent-use 不附带这些适配器或跑腿服务。
 
-CLI 座位可选 `adapter`：缺省或 `null` 为普通 CLI；目前字符串仅允许 `"codex"`，且仅用于 `kind=cli`。本地 `"adapter": null` 可清除公开配置继承值，部分字段覆盖则继续继承。升级时，本地覆盖会继承公开配置的 adapter；若将 `codex`/`codex-sol` 改为非 Codex 的 CLI 或 `agent_use`，须显式写 `"adapter": null`；继续使用 Codex 时，`argv_rw`/`argv_ro` 须保持 exec 形状。Codex 适配器要求 `argv_rw`、`argv_ro` 的 `argv[0]` 为 `"{bin}"`，第二项为 `"exec"`，各恰好含一个 `"--sandbox"`，`argv_ro` 其后必须为 `"read-only"`，`argv_rw` 可为 `"read-only"` 或 `"workspace-write"`。它启用沙箱/派单提醒、内层 shell 防嵌套、linked worktree 可写根、写单 `--net`、独立 CODEX_HOME 和 token 记账；行为按实际执行座位判断。新增 `codex-high` 等别名时，在本地 `seats` 中复制公开 `codex` 座位完整配置（含 argv），保留 `"adapter": "codex"`，再调整 `effort` 等字段；座位名本身不会启用适配器。看起来是 Codex 命令却未声明 adapter 时，doctor 只警告。
+CLI 座位可选 `adapter`：缺省或 `null` 为普通 CLI；目前字符串仅允许 `"codex"`，且仅用于 `kind=cli`。本地 `"adapter": null` 可清除公开配置继承值，部分字段覆盖则继续继承。升级时，本地覆盖会继承公开配置的 adapter；若将 `codex`/`codex-sol` 改为非 Codex 的 CLI 或 `agent_use`，须显式写 `"adapter": null`；继续使用 Codex 时，`argv_rw`/`argv_ro` 须保持 exec 形状。Codex 适配器要求 `argv_rw`、`argv_ro` 的 `argv[0]` 为 `"{bin}"`，第二项为 `"exec"`，各恰好含一个 `"--sandbox"`，`argv_ro` 其后必须为 `"read-only"`，`argv_rw` 可为 `"read-only"` 或 `"workspace-write"`。它启用沙箱/派单提醒、内层 shell 防嵌套、linked worktree 可写根、写单默认联网与 `--no-net`、独立 CODEX_HOME 和 token 记账；行为按实际执行座位判断。新增 `codex-high` 等别名时，在本地 `seats` 中复制公开 `codex` 座位完整配置（含 argv），保留 `"adapter": "codex"`，再调整 `effort` 等字段；座位名本身不会启用适配器。看起来是 Codex 命令却未声明 adapter 时，doctor 只警告。
 
 `map_default` 指定 map 默认角色或座位（公开为角色 `draft`）。座位可设正整数 `max_concurrency`，map 使用它与 `--jobs` 的较小值，降并发时提示。
 
@@ -606,9 +606,9 @@ CLI 座位可选 `adapter`：缺省或 `null` 为普通 CLI；目前字符串仅
 
 ### agent-use 契约与漂移诊断
 
-`kind=agent_use` 座位可选布尔字段 `workspace`，默认 false（纯文本、硬禁工具）。设为 true 时，provider 必须声明 `tool_policy=workspace`；可进入 write 候选，不能同时设 `require_no_tools: true`。未启用 `--text` 时，派单传 `--workdir <绝对路径> --access ro|rw`：`--ro`、`ro_only`、review 使用 ro，其余使用 rw。ro 只能读文件、搜索和列目录，不能编辑或跑命令；rw 开放全部内置工具并跳过确认，不套 `sandbox-exec`，文件直接改在工作目录，调用方用 diff 验收。两种模式均不加载 MCP。附件可选；直接派单给 workspace 座位文件清单，由它自行读取，panel 仍给各家同一份附件全文快照。`--net` 只打印说明、不生效，联网由供应商决定；写单复用 CLI 的 baseline、改动统计、账本与汇报。
+`kind=agent_use` 座位可选布尔字段 `workspace`，默认 false（纯文本、硬禁工具）。设为 true 时，provider 必须声明 `tool_policy=workspace`；可进入 write 候选，不能同时设 `require_no_tools: true`。未启用 `--text` 时，派单传 `--workdir <绝对路径> --access ro|rw`：`--ro`、`ro_only`、review 使用 ro，其余使用 rw。ro 只能读文件、搜索和列目录，不能编辑或跑命令；rw 开放全部内置工具并跳过确认，不套 `sandbox-exec`，文件直接改在工作目录，调用方用 diff 验收。两种模式均不加载 MCP。附件可选；直接派单给 workspace 座位文件清单，由它自行读取，panel 仍给各家同一份附件全文快照。`--net` / `--no-net` 只打印说明、不生效，联网由供应商决定；写单复用 CLI 的 baseline、改动统计、账本与汇报。
 
-`--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 同用返回 64。
+`--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 或 `--no-net` 同用返回 64。
 
 agent-use 的 `status.json` 必须声明整数 `protocol_version: 1`。缺失或不兼容时记为 `incompatible`，按 `not_installed` 时长熔断并沿顶替链换下一家。外层超时仍保留超时兜底。失败结果的未知 reason（非 rc=124）会在 stderr 提醒更新 `AGENT_USE_REASON`，分类保持 `other`。
 

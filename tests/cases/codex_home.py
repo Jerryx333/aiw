@@ -252,7 +252,8 @@ def codex_adapter_alias():
             check(worker.codex_workspace_write('codex-high', False), '别名写单判定失效')
             for seat, ro in (('codex-high', True), ('readonly', False), ('plain', False), ('codex', False)):
                 check(not worker.codex_workspace_write(seat, ro), f'{seat} 误判写单')
-        for seat, flags, adapted in (('codex-high', ('--net',), True), ('codex-high', ('--ro',), True),
+        for seat, flags, adapted in (('codex-high', (), True), ('codex-high', ('--no-net',), True),
+                                      ('codex-high', ('--net',), True), ('codex-high', ('--ro',), True),
                                       ('codex-sol', ('--ro',), True), ('plain', (), False),
                                       ('codex', (), False), ('claude', ('--ro',), False)):
             r = run(seat, flags); check(r.returncode == 0, r.stderr)
@@ -275,8 +276,9 @@ def codex_adapter_alias():
                 roots_arg = next(a for a in argv if a.startswith('sandbox_workspace_write.writable_roots='))
                 check(tomllib.loads(roots_arg)['sandbox_workspace_write']['writable_roots'] ==
                       worker.worktree_writable_roots(str(linked)), '别名 worktree roots 错误')
-                check('sandbox_workspace_write.network_access=true' in argv and '已开放网络' in task,
+                check(('sandbox_workspace_write.network_access=true' in argv) == ('--no-net' not in flags),
                       '别名 net 覆盖错误')
+                check(('已开放网络' in task) == ('--no-net' not in flags), '别名网络提醒错误')
         for seat, flags in (('codex-high', ('--ro', '--net')), ('codex-sol', ('--net',)),
                             ('readonly', ('--net',)), ('alias-ro', ('--net',)), ('plain', ('--net',)), ('claude', ('--net',))):
             r = run(seat, flags); check(r.returncode == 64, r.stderr)

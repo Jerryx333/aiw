@@ -5,7 +5,7 @@
     kind=cli        直接调用命令行（codex），可以写文件。
 
 用法：
-    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net] [--no-fallback] [--chain seat-a,seat-b] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
+    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net | --no-net] [--no-fallback] [--chain seat-a,seat-b] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
         --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；macOS 上写时复制带上全部被忽略的文件（.env、node_modules 等）；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
         prompt_file 写 - 时从标准输入读 prompt，不用先建临时文件。
         --text 隐含 --ro；workspace 座位禁用工具；draft 自动启用。
@@ -2196,13 +2196,13 @@ def codex_workspace_write(seat: str, ro: bool) -> bool:
             and any(argv[i:i + 2] == ["--sandbox", "workspace-write"] for i in range(len(argv))))
 
 
-def dispatch_reminders(seat: str, ro: bool, workdir: str, net: bool = False,
+def dispatch_reminders(seat: str, ro: bool, workdir: str, net: bool = True,
                        verify: list[str] | None = None) -> str:
     if seat_adapter(seat) != "codex" or SEATS["seats"][seat].get("kind") == "agent_use":
         return ""
     sandbox = ""
     if codex_workspace_write(seat, ro):
-        access = "本单已开放网络和本地端口（--net）" if net else "默认不能联网、不能监听本地端口（需要时由主会话加 --net 重派）"
+        access = "默认已开放网络和本地端口（可用 --no-net 按单关闭）" if net else "本单不能联网、不能监听本地端口（--no-net）"
         testing = ("本单验收命令由 aiw 在沙箱外运行：你只跑与改动相关的定向测试，不必自跑全量；沙箱导致的失败不用写进观察记录，也不用列补跑。"
                    if verify else "验收命令因沙箱失败时不要绕过或改测试迁就；在回答里列「需主会话补跑」小节，写出命令和失败原因。")
         sandbox = f"沙箱说明：{access}，只能写工作目录及本单明确开放的 worktree Git 目录。{testing}\n"
@@ -2213,7 +2213,7 @@ def dispatch_reminders(seat: str, ro: bool, workdir: str, net: bool = False,
             "并在回答中指出不符之处（附 path:line）。")
 
 
-def build_argv(seat: str, prompt: str, workdir: str, ro: bool, effort: str | None = None, net: bool = False) -> list[str] | None:
+def build_argv(seat: str, prompt: str, workdir: str, ro: bool, effort: str | None = None, net: bool = True) -> list[str] | None:
     cfg = SEATS["seats"][seat]
     binary = os.environ.get(cfg.get("bin_env", "")) or cfg["bin"]
     if shutil.which(binary) is None and not Path(binary).exists():
@@ -2276,7 +2276,7 @@ def preflight(cfg: dict) -> dict | None:
     return {"kind": "locked", "rc": 1, "out": "", "err": err, "secs": round(time.time() - t0, 1)}
 
 
-def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = False, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False) -> dict:
+def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = True, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False) -> dict:
     global PENDING_SIGNAL
     mode = effective_mode(None, SEATS['seats'][seat], ({'--ro'} if ro else set()) | ({'--text'} if text else set()))
     ro, text = mode != 'rw', text or mode == 'text'
@@ -2338,7 +2338,7 @@ def readonly_argv_error(seat, argv, prompt=None):
     return None
 
 
-def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = False, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False) -> dict:
+def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = True, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False) -> dict:
     if SEATS["seats"][seat].get("kind") == "agent_use":
         if not ro and text_only_seat(seat):
             return {"rc": 64, "out": "", "err": "文本座位不能改文件", "kind": "invalid_argv", "secs": 0}
@@ -2958,7 +2958,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     # 点名座位不许执行端用链上的别的座位顶替；角色仍按链顶替。
     if wire_no_fallback and '--no-fallback' not in flags:
         flags.add('--no-fallback')
-    argv += [flag for flag in ('--ro', '--text', '--net', '--no-fallback', '--no-findings') if flag in flags]
+    argv += [flag for flag in ('--ro', '--text', '--net', '--no-net', '--no-fallback', '--no-findings') if flag in flags]
     if values.get('effort') is not None:
         argv += ['--effort', values['effort']]
     for name, _ in files:
@@ -3124,7 +3124,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         return 0
     try:
         values = {}
-        args, flags, attach = split_argv(sys.argv[1:], {"--ro", "--text", "--worktree", "--net", "--no-fallback", "--chain", "--no-findings", "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}, values=values)
+        args, flags, attach = split_argv(sys.argv[1:], {"--ro", "--text", "--worktree", "--net", "--no-net", "--no-fallback", "--chain", "--no-findings", "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}, values=values)
         effort = values.get("effort")
     except AttachError as e:
         print(f"[ai-worker] {e}", file=sys.stderr)
@@ -3138,6 +3138,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         return 64
     if len(args) != 4:
         print(__doc__, file=sys.stderr)
+        return 64
+    if "--net" in flags and "--no-net" in flags:
+        print("[ai-worker] --net 与 --no-net 不能同时使用", file=sys.stderr)
         return 64
     seat, workdir, timeout_s, prompt_file = args
     from seats_config import BUILTIN_COMMANDS
@@ -3262,13 +3265,13 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     if verify and ro:
         print("[ai-worker] --verify 只用于写任务", file=sys.stderr)
         return 64
-    net = "--net" in flags
-    if net and not text and agent_use_workspace(seat_cfg):
-        print(f"[ai-worker] {seat}：workspace 座位联网由供应商决定，--net 不生效", file=sys.stderr)
-        net = False
-    if net and (ro or (seat_cfg and (seat_adapter(seat) != "codex" or seat_cfg.get("kind") == "agent_use"
+    network_flag = "--no-net" if "--no-net" in flags else "--net" if "--net" in flags else None
+    net = "--no-net" not in flags
+    if network_flag and not text and agent_use_workspace(seat_cfg):
+        print(f"[ai-worker] {seat}：workspace 座位联网由供应商决定，{network_flag} 不生效", file=sys.stderr)
+    elif network_flag and (ro or (seat_cfg and (seat_adapter(seat) != "codex" or seat_cfg.get("kind") == "agent_use"
                                    or not codex_workspace_write(seat, ro)))):
-        print("[ai-worker] --net 只用于 codex 类座位的写单，不能与 --ro 或只读座位同用，也不能用于非 codex 座位", file=sys.stderr)
+        print(f"[ai-worker] {network_flag} 只用于 codex 类座位的写单，不能与 --ro 或只读座位同用，也不能用于非 codex 座位", file=sys.stderr)
         return 64
     if effort is not None and seat_cfg and not supports_effort(seat):
         print(f"[ai-worker] {seat}：该座位不支持 --effort", file=sys.stderr)
@@ -3423,8 +3426,9 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             attempt["attempted"] = True
                             cfg = SEATS["seats"][s]
                             kind = "cli" if agent_use_workspace(cfg) and not actual_text else cfg.get("kind")
-                            if net and agent_use_workspace(cfg):
-                                print(f"[ai-worker] {s}：workspace 座位联网由供应商决定，--net 不生效", file=sys.stderr)
+                            if network_flag and s != seat and not codex_workspace_write(s, actual_ro):
+                                reason = "workspace 座位联网由供应商决定" if agent_use_workspace(cfg) else "本座位不是 Codex workspace-write 写单"
+                                print(f"[ai-worker] {s}：{reason}，{network_flag} 不生效", file=sys.stderr)
                             if kind != "cli" and not attachments_warned:
                                 warn_large_attachments(attachment_files)
                                 attachments_warned = True

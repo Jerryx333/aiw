@@ -9,7 +9,7 @@ def capabilities():
     return {'version': 1, 'capabilities': ['dispatch-contract-v1', 'named-chain-v1', 'tool-templates-v1', 'agent-runtime-v1', 'background-notify-v1'],
             'commands': sorted(BUILTIN_COMMANDS),
             'dispatch': {'values': ['--attach', '--effort', '--chain', '--verify', '--verify-timeout'],
-                         'flags': ['--ro', '--text', '--worktree', '--net', '--no-fallback', '--no-findings', '--allow-nested', '--require-no-tools',
+                         'flags': ['--ro', '--text', '--worktree', '--net', '--no-net', '--no-fallback', '--no-findings', '--allow-nested', '--require-no-tools',
                                    '--background', '--no-notify']}}
 
 if __name__ == '__main__':

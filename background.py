@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """普通派单的后台模式与完成通知（issue #63）。
 
-    aiw <seat> <workdir> <timeout_s> <prompt_file|-> --background [--no-notify] [派单选项 ...]
+    aiw <seat> <workdir> <timeout_s> <prompt_file|-> --background [--no-notify] [--net | --no-net] [派单选项 ...]
     aiw bg status <编号> [--json] | result <编号> | list [--all]
 
 后台模式先做和普通派单相同的用法检查，再交给脱离当前会话的监工进程执行，
@@ -32,7 +32,7 @@ from env_compat import getenv
 HERE = Path(__file__).resolve().parent
 STATE = Path(getenv("AIW_STATE", HERE / "state"))
 JOBS = STATE / "bg"
-DISPATCH_FLAGS = {"--ro", "--text", "--worktree", "--net", "--no-fallback", "--chain", "--no-findings",
+DISPATCH_FLAGS = {"--ro", "--text", "--worktree", "--net", "--no-net", "--no-fallback", "--chain", "--no-findings",
                   "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}
 STATES = {0: "succeeded", 124: "timeout", 130: "interrupted"}
 USAGE = __doc__.split("\n\n")[1]

@@ -111,7 +111,7 @@ aiw review "$HOME/.claude/aiw" 900 /tmp/aiw-review.txt --ro
 <details>
 <summary>会不会把我的仓库改乱？</summary>
 
-write 角色解析到 Codex 时在 Codex 沙箱里跑：只能写项目目录（在 git worktree 里还包括 `git add` 需要的 Git 目录），默认不联网。结束时列出改了哪些文件，改动留在工作区，由主会话看过再提交。只有 Claude 时用 claude-write 的受限模式和沙箱，只改工作区文件，不能 git add/commit。只读单不能改文件。
+write 角色解析到 Codex 时在 Codex 沙箱里跑：只能写项目目录（在 git worktree 里还包括 `git add` 需要的 Git 目录），默认开放网络和本地端口，可用 `--no-net` 按单关闭。结束时列出改了哪些文件，改动留在工作区，由主会话看过再提交。只有 Claude 时用 claude-write 的受限模式和沙箱，只改工作区文件，不能 git add/commit。只读单不能改文件。
 
 </details>
 
@@ -158,7 +158,7 @@ Linux 尚未测试，已测试 macOS。
 | `aiw review . 900 task.txt` | 只读评审、在仓库里找代码 |
 | `aiw draft . 600 task.txt` | 起草、改写、摘要 |
 | `aiw doctor` | 看各角色落到哪个模型、安装是否正常 |
-| `aiw <座位> . 900 task.txt` | 点名某个座位派单；常用开关 `--ro` 只读、`--worktree` 在独立 worktree 里派写单、`--net` 给 Codex 写单开放网络，细则见[参考手册](docs/reference.zh-CN.md#命令) |
+| `aiw <座位> . 900 task.txt` | 点名某个座位派单；常用开关 `--ro` 只读、`--worktree` 在独立 worktree 里派写单、`--no-net` 为 Codex 写单关闭网络（默认开放网络和本地端口，兼容 `--net`），细则见[参考手册](docs/reference.zh-CN.md#命令) |
 | `aiw panel` | 收集多家独立意见：`aiw panel . 600 task.txt --prior prior.md`，用 `--prior` 附上自己的判断，逐条接受、驳回或暂缓，不按多数票 |
 | `aiw map` | 逐文件执行同一要求：`aiw map . 600 task.txt src/a.py src/b.py` |
 | `aiw goal init / verify` | 建清单 `aiw goal init docs/goals/demo.json`，修改任务、验证命令和路径后运行 `aiw goal verify docs/goals/demo.json --full` |

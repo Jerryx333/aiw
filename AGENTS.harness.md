@@ -1,6 +1,6 @@
 # 多模型分工（aiw，Codex / pi / omp 当主会话时）
 
-由 install.sh 写入标记块（改源文件 AGENTS.harness.md 后重跑 `~/.claude/aiw/install.sh`，不直接改标记块）。项目 AGENTS.md 可覆盖；个人规则冲突时优先。命令参数、rc、`--net`、跑腿、/goal、免费座位保护、嵌套执行方（AIW_NESTED）等细节见 `~/.claude/aiw/docs/reference.zh-CN.md`，用到时再读。
+由 install.sh 写入标记块（改源文件 AGENTS.harness.md 后重跑 `~/.claude/aiw/install.sh`，不直接改标记块）。项目 AGENTS.md 可覆盖；个人规则冲突时优先。命令参数、rc、`--no-net` / `--net`、跑腿、/goal、免费座位保护、嵌套执行方（AIW_NESTED）等细节见 `~/.claude/aiw/docs/reference.zh-CN.md`，用到时再读。
 
 ## 角色
 

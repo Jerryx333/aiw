@@ -1045,7 +1045,7 @@ def worker_regression():
         argf = t / "codex.args"
         p = run("codex", extra=(), FAKE_CODEX_ARGS=str(argf)); check(p.returncode == 0 and "codex ok" in p.stdout and prov() == "codex", f"codex 写任务: {p.stderr}")
         a = argf.read_text().splitlines()
-        check(a[:8] == ["exec", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"', "-c", 'shell_environment_policy.set.AIW_NESTED="1"', "--cd"] and "workspace-write" in a, f"codex 应用 sol + medium + 可写: {a}")
+        check(a[:10] == ["exec", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"', "-c", 'sandbox_workspace_write.network_access=true', "-c", 'shell_environment_policy.set.AIW_NESTED="1"', "--cd"] and "workspace-write" in a, f"codex 应用 sol + medium + 可写且默认联网: {a}")
         p = run("codex-sol", extra=(), FAKE_CODEX_ARGS=str(argf)); a = argf.read_text().splitlines()
         check("read-only" in a and "workspace-write" not in a, f"codex-sol 不带 --ro 也必须只读: {a}")
         p = run("codex-sol", FAKE_CODEX_ARGS=str(argf)); a = argf.read_text().splitlines()
@@ -1137,32 +1137,77 @@ def worker_regression():
 
 
 def codex_net():
+    from unittest.mock import patch
+    import ai_worker as worker
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         run, work, prompt, output, harness = findings_worker_fixture(root)
         args = root / 'args'
-        r, row, _ = run(flags=('--net', '--no-fallback'), FAKE_CODEX_ARGS=str(args))
-        check(r.returncode == 0, r.stderr)
-        argv = args.read_text().splitlines()
         override = 'sandbox_workspace_write.network_access=true'
-        check(argv.count(override) == 1 and argv[argv.index(override)-1] == '-c', str(argv))
-        check(argv.index(override) < argv.index('--skip-git-repo-check'), str(argv))
-        task = (Path(row['run_dir']) / 'task.txt').read_text()
-        check('本单已开放网络和本地端口（--net）' in task and '默认不能联网' not in task, task)
-        check('加 --net 重派' not in task, task)
+        for flags in ((), ('--net',), ('--no-net',)):
+            r, row, _ = run(flags=(*flags, '--no-fallback'), FAKE_CODEX_ARGS=str(args))
+            check(r.returncode == 0, r.stderr)
+            argv = args.read_text().splitlines()
+            online = '--no-net' not in flags
+            check(argv.count(override) == int(online), str(argv))
+            if online:
+                check(argv[argv.index(override)-1] == '-c', str(argv))
+                check(argv.index(override) < argv.index('--skip-git-repo-check'), str(argv))
+            task = (Path(row['run_dir']) / 'task.txt').read_text()
+            check(('默认已开放网络和本地端口' in task) == online, task)
+            check(('本单不能联网、不能监听本地端口（--no-net）' in task) == (not online), task)
+            check('加 --net 重派' not in task, task)
+        r, _, _ = run(flags=('--net', '--no-net'))
+        check(r.returncode == 64 and '不能同时使用' in r.stderr, repr(r))
         cmd = [sys.executable, str(harness / 'ai_worker.py')]
-        for seat, flags in (('codex', ['--net', '--ro']), ('codex-sol', ['--net']),
-                            ('workbuddy', ['--net', '--ro']), ('claude', ['--net'])):
-            r = sh(cmd + [seat, str(work), '10', str(prompt), *flags])
-            check(r.returncode == 64 and '--net' in r.stderr and '只用于' in r.stderr, repr(r))
-        r, _, _ = run(flags=('--no-fallback',), FAKE_CODEX_ARGS=str(args))
+        for network_flag in ('--net', '--no-net'):
+            for seat, flags in (('codex', ['--ro']), ('codex', ['--text']), ('codex-sol', []),
+                                ('workbuddy', ['--ro']), ('claude', [])):
+                r = sh(cmd + [seat, str(work), '10', str(prompt), network_flag, *flags])
+                check(r.returncode == 64 and network_flag in r.stderr and '只用于' in r.stderr, repr(r))
+        # 网络默认值只影响实际使用 workspace-write 的 Codex 适配器。
+        with patch.object(worker.shutil, 'which', return_value='/fake/bin'):
+            for seat, ro in (('codex', True), ('codex-sol', True), ('claude-write', False)):
+                for net in (False, True):
+                    argv = worker.build_argv(seat, 'TASK', str(work), ro, net=net)
+                    check(not any(a.startswith('sandbox_workspace_write.network_access=') for a in argv), str(argv))
+            argv = worker.build_argv('codex', 'TASK', str(work), False)
+            check(override in argv, str(argv))
+        r, _, _ = run(flags=('--ro', '--no-fallback'), FAKE_CODEX_ARGS=str(args))
         check(r.returncode == 0 and override not in args.read_text(), r.stderr)
         local = root / 'readonly-sandbox.json'
         argv_rw = list(legacy_config()['seats']['codex']['argv_rw'])
         argv_rw[argv_rw.index('--sandbox') + 1] = 'read-only'
         write_legacy_local(local, {'seats': {'codex': {'argv_rw': argv_rw}}})
-        r, _, _ = run(flags=('--net', '--no-fallback'), AIW_CONFIG=str(local))
-        check(r.returncode == 64 and '--net' in r.stderr and '只用于' in r.stderr, repr(r))
+        for network_flag in ('--net', '--no-net'):
+            r, _, _ = run(flags=(network_flag, '--no-fallback'), AIW_CONFIG=str(local))
+            check(r.returncode == 64 and network_flag in r.stderr and '只用于' in r.stderr, repr(r))
+        r, row, _ = run(flags=('--no-fallback',), AIW_CONFIG=str(local), FAKE_CODEX_ARGS=str(args))
+        check(r.returncode == 0 and override not in args.read_text(), r.stderr)
+        check('沙箱说明' not in (Path(row['run_dir']) / 'task.txt').read_text(), str(row))
+        # 首座失败后，网络选择必须随单进入实际座位，非 Codex 顶替不能被扩权。
+        for target in ('backup', 'claude-write'):
+            for offline in (False, True):
+                fresh = root / f'fallback-{target}-{offline}'; fresh.mkdir()
+                run, work, _, _, _ = findings_worker_fixture(fresh)
+                local = fresh / 'chain.json'
+                write_legacy_local(local, {
+                    'seats': {'backup': dict(legacy_config()['seats']['codex'])},
+                    'fallback': {'codex': [target]},
+                })
+                args = fresh / 'args'
+                flags = ('--no-net',) if offline else ()
+                r, row, _ = run(flags=flags, AIW_CONFIG=str(local), FAKE_CODEX='auth_sol',
+                                FAKE_CODEX_AUTH_MARKER=str(fresh / 'auth-marker'),
+                                FAKE_CODEX_ARGS=str(args), FAKE_CLAUDE_ARGS=str(args))
+                check(r.returncode == 0 and row['actual'] == target, r.stderr + str(row))
+                argv = args.read_text().splitlines()
+                check((override in argv) == (target == 'backup' and not offline), str(argv))
+                task = (Path(row['run_dir']) / 'task.txt').read_text()
+                check(('默认已开放网络和本地端口' in task) == (target == 'backup' and not offline), task)
+                check(('本单不能联网' in task) == (target == 'backup' and offline), task)
+                if target == 'claude-write' and offline:
+                    check('--no-net 不生效' in r.stderr, r.stderr)
 
 
 
@@ -1239,10 +1284,10 @@ def codex_dispatch_reminders():
             check(r.returncode == 0, r.stderr)
             task = (Path(row['run_dir']) / 'task.txt').read_text()
             semantic = '派单里对规则、数据字段含义的转述以原文为准'
-            sandbox = '沙箱说明：默认不能联网、不能监听本地端口（需要时由主会话加 --net 重派）'
+            sandbox = '沙箱说明：默认已开放网络和本地端口（可用 --no-net 按单关闭）'
             check((semantic in task) == (seat != 'workbuddy'), task)
             check((sandbox in task) == ('--ro' not in flags), task)
-            check(('加 --net 重派' in task) == ('--ro' not in flags), task)
+            check('加 --net 重派' not in task, task)
             check(linked_notice not in task, task)
             if seat != 'workbuddy':
                 check('附 path:line' in task, task)
@@ -1292,12 +1337,13 @@ def codex_dispatch_reminders():
         r = sh(['git', 'worktree', 'repair', str(linked)], cwd=saved_work)
         check(r.returncode == 0, r.stderr)
         work.symlink_to(linked, target_is_directory=True)
-        for flags in (('--no-fallback',), ('--net', '--no-fallback'), ('--ro', '--no-fallback')):
+        for flags in (('--no-fallback',), ('--net', '--no-fallback'), ('--no-net', '--no-fallback'), ('--ro', '--no-fallback')):
             r, row, _ = run(flags=flags)
             check(r.returncode == 0, r.stderr)
             task = (Path(row['run_dir']) / 'task.txt').read_text()
             check((linked_notice in task) == ('--ro' not in flags), task)
-            check(('加 --net 重派' in task) == ('--ro' not in flags and '--net' not in flags), task)
+            check(('默认已开放网络和本地端口' in task) == ('--ro' not in flags and '--no-net' not in flags), task)
+            check(('本单不能联网' in task) == ('--no-net' in flags), task)
 
 
 

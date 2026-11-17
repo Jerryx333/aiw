@@ -116,9 +116,9 @@ aiw 帮 Claude Code 或 Codex 主会话把活分给不同模型：改代码用 w
 3. 可选：用 `router-rules.local.json` 将起草类任务路由过去；参照[座位示例](../seats.local.example.json)和[路由示例](../router-rules.local.example.json)。
 4. 运行 `aiw doctor`。启用座位的 provider 在生效注册表中缺失或被禁用时会警告；这类警告不改变退出码。
 
-`kind=agent_use` 座位可选布尔字段 `workspace`，默认 false（文本派单，不传 `--workdir/--access`，但不会因此硬禁供应商工具；只有配置 `require_no_tools: true` 才传 `--require-no-tools`）。设为 true 时，provider 必须声明 `tool_policy=workspace`；可进入 write 候选，不能同时设 `require_no_tools: true`。未启用 `--text` 时，派单传 `--workdir <绝对路径> --access ro|rw`：`--ro`、`ro_only`、review 使用 ro，其余使用 rw。ro 只能读文件、搜索和列目录，不能编辑或跑命令；rw 开放全部内置工具并跳过确认，不套 `sandbox-exec`，文件直接改在工作目录，调用方用 diff 验收。两种模式均不加载 MCP。附件可选；直接派单给 workspace 座位文件清单，由它自行读取，panel 仍给各家同一份附件全文快照。`--net` 只打印说明、不生效，联网由供应商决定；写单复用 CLI 的 baseline、改动统计、账本与汇报。
+`kind=agent_use` 座位可选布尔字段 `workspace`，默认 false（文本派单，不传 `--workdir/--access`，但不会因此硬禁供应商工具；只有配置 `require_no_tools: true` 才传 `--require-no-tools`）。设为 true 时，provider 必须声明 `tool_policy=workspace`；可进入 write 候选，不能同时设 `require_no_tools: true`。未启用 `--text` 时，派单传 `--workdir <绝对路径> --access ro|rw`：`--ro`、`ro_only`、review 使用 ro，其余使用 rw。ro 只能读文件、搜索和列目录，不能编辑或跑命令；rw 开放全部内置工具并跳过确认，不套 `sandbox-exec`，文件直接改在工作目录，调用方用 diff 验收。两种模式均不加载 MCP。附件可选；直接派单给 workspace 座位文件清单，由它自行读取，panel 仍给各家同一份附件全文快照。`--net` / `--no-net` 只打印说明、不生效，联网由供应商决定；写单复用 CLI 的 baseline、改动统计、账本与汇报。
 
-`--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 同用返回 64。
+`--text` 隐含 `--ro`；workspace 座位改传 `--require-no-tools`，不传 `--workdir/--access`（access=none），附件改为全文；非 workspace agent_use 和 CLI 座位仅增加只读约束。draft 角色和逐文件 map 自动启用，review/write 与 panel 不自动启用；顶替链逐座位应用同一规则，`--text` 与 `--net` 或 `--no-net` 同用返回 64。
 
 ## 自定义
 
@@ -166,4 +166,4 @@ aiw 帮 Claude Code 或 Codex 主会话把活分给不同模型：改代码用 w
 
 ### 自定义 CLI 适配器
 
-CLI 座位可选 `adapter`：缺省或 `null` 为普通 CLI；目前字符串仅允许 `"codex"`，且仅用于 `kind=cli`。本地 `"adapter": null` 可清除公开配置继承值，部分字段覆盖则继续继承。升级时，本地覆盖会继承公开配置的 adapter；若将 `codex`/`codex-sol` 改为非 Codex 的 CLI 或 `agent_use`，须显式写 `"adapter": null`；继续使用 Codex 时，`argv_rw`/`argv_ro` 须保持 exec 形状。Codex 适配器要求 `argv_rw`、`argv_ro` 的 `argv[0]` 为 `"{bin}"`，第二项为 `"exec"`，各恰好含一个 `"--sandbox"`，`argv_ro` 其后必须为 `"read-only"`，`argv_rw` 可为 `"read-only"` 或 `"workspace-write"`。它启用沙箱/派单提醒、内层 shell 防嵌套、linked worktree 可写根、写单 `--net`、独立 CODEX_HOME 和 token 记账；行为按实际执行座位判断。新增 `codex-high` 等别名时，在本地 `seats` 中复制公开 `codex` 座位完整配置（含 argv），保留 `"adapter": "codex"`，再调整 `effort` 等字段；座位名本身不会启用适配器。看起来是 Codex 命令却未声明 adapter 时，doctor 只警告。
+CLI 座位可选 `adapter`：缺省或 `null` 为普通 CLI；目前字符串仅允许 `"codex"`，且仅用于 `kind=cli`。本地 `"adapter": null` 可清除公开配置继承值，部分字段覆盖则继续继承。升级时，本地覆盖会继承公开配置的 adapter；若将 `codex`/`codex-sol` 改为非 Codex 的 CLI 或 `agent_use`，须显式写 `"adapter": null`；继续使用 Codex 时，`argv_rw`/`argv_ro` 须保持 exec 形状。Codex 适配器要求 `argv_rw`、`argv_ro` 的 `argv[0]` 为 `"{bin}"`，第二项为 `"exec"`，各恰好含一个 `"--sandbox"`，`argv_ro` 其后必须为 `"read-only"`，`argv_rw` 可为 `"read-only"` 或 `"workspace-write"`。它启用沙箱/派单提醒、内层 shell 防嵌套、linked worktree 可写根、写单默认联网与 `--no-net`、独立 CODEX_HOME 和 token 记账；行为按实际执行座位判断。新增 `codex-high` 等别名时，在本地 `seats` 中复制公开 `codex` 座位完整配置（含 argv），保留 `"adapter": "codex"`，再调整 `effort` 等字段；座位名本身不会启用适配器。看起来是 Codex 命令却未声明 adapter 时，doctor 只警告。

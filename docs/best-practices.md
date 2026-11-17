@@ -50,7 +50,7 @@ AIW_MAIN=claude aiw write . 1200 /tmp/aiw-doc-task.txt
 
 For rules or field meanings, include original text and `path:line`, not just a paraphrase. If the two disagree, follow the original and report the discrepancy. Workspace agent_use seats can read the repository; non-workspace text seats do not automatically read it; provide material with `--attach`. Check sensitive content before sending: file checks cannot detect every key in the text.
 
-`--text` implies `--ro`; workspace seats receive `--require-no-tools` without `--workdir/--access` (access=none), with attachments inline. For non-workspace agent_use and CLI seats, it only adds read-only mode. The draft role and per-file map enable it automatically; review/write and panel do not. The same rule applies to every fallback seat; combining `--text` with `--net` returns 64.
+`--text` implies `--ro`; workspace seats receive `--require-no-tools` without `--workdir/--access` (access=none), with attachments inline. For non-workspace agent_use and CLI seats, it only adds read-only mode. The draft role and per-file map enable it automatically; review/write and panel do not. The same rule applies to every fallback seat; combining `--text` with `--net` or `--no-net` returns 64.
 
 ## Treat output as a draft
 
