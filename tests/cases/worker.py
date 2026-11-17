@@ -841,6 +841,13 @@ def no_work_streak_trips_breaker():
         rows = [json.loads(line) for line in (state / "seat-ledger.jsonl").read_text().splitlines()]
         check(r.returncode == 1 and "熔断中" in r.stderr and rows[-1]["kind"] == "skipped_breaker"
               and len(log.read_text().splitlines()) == calls, (r.stderr, rows[-1]))
+        # 熔断期内被跳过的尝试不计数、不续期。
+        until = json.loads((state / "breaker.json").read_text())["doubao"]["until"]
+        r = run("provider_failed")
+        skipped = json.loads((state / "breaker.json").read_text())["doubao"]
+        streak = json.loads((state / "no-work-streak.json").read_text())
+        check(r.returncode == 1 and skipped["until"] == until and streak["doubao"]["count"] == 2,
+              ("熔断跳过不应计数或续期", r.stderr, skipped, streak))
         (state / "breaker.json").unlink()
         (state / "no-work-streak.json").unlink()
         # 一次 ok 清零：先失败 1 次，再成功，再失败 1 次仍然不熔断。
@@ -860,6 +867,49 @@ def no_work_streak_trips_breaker():
         check(run("timeout").returncode == 124, "timeout 应 rc=124")
         breaker = json.loads((state / "breaker.json").read_text())["doubao"]
         check(breaker["reason"] == "unavailable", breaker)
+
+
+def no_work_streak_trip_is_atomic_with_success():
+    """计数到 2 与开熔断在同一把锁内，窗口里插入一次 ok 后最终不应熔断。"""
+    import threading
+    import ai_worker as worker
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        state = t / "state"; state.mkdir()
+        saved = (worker.STATE, worker.NO_WORK, worker.BREAKER, worker.state_lock, worker.save_json)
+        lock = threading.RLock()
+
+        class ReentrantLock:
+            def __enter__(self):
+                lock.acquire()
+
+            def __exit__(self, *exc):
+                lock.release()
+
+        worker.STATE, worker.NO_WORK, worker.BREAKER = state, state / "no-work-streak.json", state / "breaker.json"
+        worker.state_lock = ReentrantLock
+        try:
+            fail = {"kind": "transient", "reason": "provider_failed"}
+            worker.note_work_outcome("seat-x", fail, None, True)
+            check(json.loads(worker.NO_WORK.read_text())["seat-x"]["count"] == 1, "第一次失败应计数 1")
+            injected = []
+            original_save = worker.save_json
+
+            def save(path, data):
+                original_save(path, data)
+                if path == worker.NO_WORK and not injected and data.get("seat-x", {}).get("count") == 2:
+                    injected.append(True)
+                    # 模拟另一个进程在这个窗口里成功：清零计数，尚未开熔断。
+                    worker.note_work_outcome("seat-x", {"kind": "ok", "rc": 0}, None, True)
+
+            worker.save_json = save
+            worker.note_work_outcome("seat-x", fail, None, True)
+            worker.save_json = original_save
+            check(injected, "未进入计数到 2 的窗口")
+            check(not worker.BREAKER.exists(), "计数到 2 后被成功清零，不应熔断")
+            check("seat-x" not in json.loads(worker.NO_WORK.read_text()), "成功应清零连续计数")
+        finally:
+            worker.STATE, worker.NO_WORK, worker.BREAKER, worker.state_lock, worker.save_json = saved
 
 
 def page_adapter_reasons():
@@ -1915,6 +1965,7 @@ CASES = {case.__name__: case for case in (
     claude_transcript_usage,
     agent_use_transient,
     no_work_streak_trips_breaker,
+    no_work_streak_trip_is_atomic_with_success,
     page_adapter_reasons,
     worker_regression,
     codex_net,

@@ -290,6 +290,18 @@ MUTATIONS.extend([
      'old': '        chain = explicit',
      'new': "        chain = [explicit[0]] + SEATS['fallback'].get(explicit[0], [])",
      'tests': ['receiver_explicit_chain'], 'location': 'dispatch_chain'},
+    {'id': 'agent-forward-missing-seat-66', 'expect': '执行端没有同名等价座位时应在发起端本机执行',
+     'invariant': '身份核对缺同名等价座位以 66 明确拒收，发起端本机重跑',
+     'file': 'agent_forward.py',
+     'old': '            sys.exit(RECEIVER_SEAT_UNAVAILABLE)',
+     'new': '            sys.exit(64)',
+     'tests': ['forward_identity_missing_named_seat_runs_local'], 'location': 'main'},
+    {'id': 'no-work-trip-stale-count', 'expect': '计数到 2 后被成功清零，不应熔断',
+     'invariant': '连续没开工计数与熔断状态在同一次锁内更新，成功清零优先',
+     'file': 'ai_worker.py',
+     'old': '                    current = load_json(NO_WORK, {})',
+     'new': '                    current = data  # 变异：使用进入锁时的旧快照',
+     'tests': ['no_work_streak_trip_is_atomic_with_success'], 'location': 'note_work_outcome'},
 ])
 
 

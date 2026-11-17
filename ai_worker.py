@@ -1295,12 +1295,17 @@ def breaker_open(seat: str, *, breakers=None) -> str | None:
     return None
 
 
-def trip(seat: str, reason: str) -> None:
+def _trip_locked(seat: str, reason: str) -> None:
+    """写熔断状态；调用者必须已持有 state_lock。"""
     minutes = SEATS["breaker"].get(f"{reason}_minutes", 15)
+    b = load_json(BREAKER, {})
+    b[seat] = {"reason": reason, "until": time.time() + minutes * 60, "since": now()}
+    save_json(BREAKER, b)
+
+
+def trip(seat: str, reason: str) -> None:
     with state_lock():
-        b = load_json(BREAKER, {})
-        b[seat] = {"reason": reason, "until": time.time() + minutes * 60, "since": now()}
-        save_json(BREAKER, b)
+        _trip_locked(seat, reason)
 
 
 def no_work_failure(result: dict, changed_files, ro: bool) -> bool:
@@ -1332,12 +1337,20 @@ def note_work_outcome(seat: str, result: dict, changed_files, ro: bool) -> None:
                 count = previous + 1
                 data[seat] = {"count": count, "since": now(),
                               "kind": result.get("kind"), "reason": result.get("reason")}
-                trip_now = count >= 2
+                save_json(NO_WORK, data)
+                if count >= 2:
+                    # 计数更新与熔断状态更新在同一次跨进程锁内完成：另一个进程
+                    # 不可能在两者之间成功清零。写熔断前再读一次计数，任何已
+                    # 清零的成功结果（例如并发尝试）都优先，不把旧失败熔断。
+                    current = load_json(NO_WORK, {})
+                    entry = current.get(seat) if isinstance(current, dict) else None
+                    if isinstance(entry, dict) and entry.get("count", 0) >= 2:
+                        _trip_locked(seat, "unavailable")
+                        trip_now = True
             else:
                 data.pop(seat, None)
-            save_json(NO_WORK, data)
+                save_json(NO_WORK, data)
         if trip_now:
-            trip(seat, "unavailable")
             print(f"[{seat}] 连续 {count} 次没开工，熔断 unavailable", file=sys.stderr)
     except Exception as error:
         print(f"[ai-worker] 警告：更新连续没开工计数失败（{type(error).__name__}）", file=sys.stderr)
@@ -3015,8 +3028,9 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
             proc.wait()
             interruption, rc = exc, exc.code
     if rc == RECEIVER_SEAT_UNAVAILABLE:
-        # 执行端在起任何进程前确认点名座位不存在、停用、未安装或熔断；不能换个座位顶上。
-        reason = f'执行端没有点名座位 {seat}（或已停用、未安装、熔断），未执行'
+        # 执行端在起任何进程前确认点名座位不存在、停用、未安装、熔断，或身份核对
+        # 找不到同名等价座位；不能换个座位顶上。66 只表示"没执行"。
+        reason = f'执行端没有点名座位 {seat}（或已停用、未安装、熔断、没有同名等价座位），未执行'
         attempt['forward_refused'] = reason
         attempt['forward_missing_seat'] = True
         print(f'[ai-worker] {reason}，改在本机执行', file=sys.stderr)

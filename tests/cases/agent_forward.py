@@ -1,11 +1,13 @@
 """Pure offline checks of forwarding identity, no model/remote process."""
+import hashlib
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
 from unittest import mock
 
-from support import check
+from support import REPO, check, sh
 from agent_forward import describe, resolve
 
 
@@ -80,9 +82,41 @@ def forwarding_named_seat_requires_the_same_name():
     check('exact' not in describe({'seats': {'picked': row}}, ['picked'], 'ro', '/a')['entries'][0], '角色链不应要求同名')
 
 
+def agent_runtime_table(seats):
+    table = {'capabilities': ['agent-runtime-v1'], 'seats': seats,
+             'fallback': {}, 'self_seats': {}, 'substitute_limit': {},
+             'panel_default': [], 'panel_free': []}
+    table['version'] = hashlib.sha256(json.dumps(
+        table, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return table
+
+
+def resolve_entry_returns_66_only_for_missing_equivalent():
+    """入口 main 只把"没有同名等价座位"映射成明确拒收 66，其他错误仍是 64。"""
+    row = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r']}
+    request = describe({'seats': {'picked': row}}, ['picked'], 'ro', '/a', exact={'picked'})
+    with tempfile.TemporaryDirectory() as td:
+        config = Path(td) / 'receiver.json'
+
+        def run(seats, payload=None):
+            config.write_text(json.dumps(agent_runtime_table(seats)))
+            return sh([sys.executable, str(REPO / 'agent_forward.py'), 'resolve'],
+                      env=dict(os.environ, AIW_CONFIG=str(config)),
+                      input=json.dumps(request if payload is None else payload))
+
+        for seats in ({}, {'alias': row}):
+            r = run(seats)
+            check(r.returncode == 66 and '未执行' in r.stderr, (seats, r))
+        r = run({'picked': row})
+        check(r.returncode == 0 and json.loads(r.stdout)['mapping'] == {'picked': 'picked'}, r)
+        r = run({'picked': row}, dict(request, mode='bogus'))
+        check(r.returncode == 64, r)
+
+
 CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names, forwarding_identity_rejects_ambiguity_and_write_relaxation,
                                  forwarding_named_seat_requires_the_same_name,
-                                 forwarding_runs_here_when_it_cannot_carry_the_request)}
+                                 forwarding_runs_here_when_it_cannot_carry_the_request,
+                                 resolve_entry_returns_66_only_for_missing_equivalent)}
 
 
 def changed_runtime_rejected_before_any_execution():

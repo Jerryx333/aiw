@@ -67,6 +67,8 @@ panel 默认名单去掉主会话自身后过滤不可用座位，stderr 列原�
 | 上游单钥匙进下游钥匙，上游说明改了下游必重跑 | `flow.py:Scheduler.add` | `flow_resume` | `flow-parent-key` |
 | 角色转发必须携带本机解析的完整链 | `ai_worker.py:forward_dispatch` | `forward_resolved_chain` | `forward-resolved-chain` |
 | 点名座位不得由执行端换成别的座位 | `ai_worker.py:forward_dispatch` | `forward_named_seat_cannot_be_substituted` | `forward-named-no-substitution` |
+| 身份核对缺同名等价座位以 66 明确拒收，其他 64 不重跑 | `agent_forward.py:main` | `forward_identity_missing_named_seat_runs_local` / `forward_identity_other_64_does_not_rerun` | `agent-forward-missing-seat-66` |
+| 连续没开工计数与熔断状态在同一次锁内更新，成功清零优先 | `ai_worker.py:note_work_outcome` | `no_work_streak_trip_is_atomic_with_success` | `no-work-trip-stale-count` |
 | 接收端不得展开自己的 fallback | `ai_worker.py:dispatch_chain` | `receiver_explicit_chain` | `receiver-chain-boundary` |
 
 跑腿只能点名 `aiw errand`，不进入文本座位和顶替链；嵌套执行方不得调用。提交前说明会花额度，账户及私人数据仅限用户同意的该单。提交、动作放行、回复提问必须由用户亲手点击 macOS 弹窗；禁止 System Events、辅助功能、脚本代点或改代码绕过。派单记录包含 job_id、state、task_url、credits_used。弹窗及额度逻辑由 agent-use 实现，本仓库离线测试只验证转发和隔离。

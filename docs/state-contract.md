@@ -47,7 +47,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | effort | 字符串，可选；本机 codex / codex-sol 本次实际推理档位（low/medium/high），转发时仅显式传参才出现 |
 | run_dir | 字符串，可选；转发时为本机 run 目录的绝对路径 |
 
-转发在启动命令前复用同一 liveness 锁和发布机制，`seat` 与 `actual` 均为请求的角色或座位名（执行期间尚不知道远端实际座位），`model` 为 `default`，`panel` 仍取 `AIW_PANEL_DIR`（map 为 null）。rc=69 或启动失败后，本机尝试覆盖同一 inflight 文件并复用锁；退出时统一清理。
+转发在启动命令前复用同一 liveness 锁和发布机制，`seat` 与 `actual` 均为请求的角色或座位名（执行期间尚不知道远端实际座位），`model` 为 `default`，`panel` 仍取 `AIW_PANEL_DIR`（map 为 null）。rc=69、rc=66 或启动失败后，本机尝试覆盖同一 inflight 文件并复用锁；退出时统一清理。
 
 ## tracks/<pid>.json
 
@@ -113,9 +113,11 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 | workdir | #9：仅 repo 为 null 时记录工作目录的绝对真实路径，否则为 null；旧记录可能缺失 |
 | declared | 可选字符串：执行方回答末尾自报的「结果：成功 / 结果：失败」，记 `success` / `failure`，没写为 `undeclared`；只在有回答的本机尝试（kind 为 ok 或 format）写入，只作元数据，不替代 kind 判定 |
 | effort | 字符串，可选；codex / codex-sol 本次实际推理档位（low/medium/high），其他座位不出现；weekly.py 按 (seat, effort) 计数 |
-| forward_refused | 可选字符串；转发命令退回（rc=69 或点名座位在本机不可用的 66）后改在本机执行时，在本机尝试记录上写明原因；未启用转发、转发成功或整单未执行时不出现 |
+| forward_refused | 可选字符串；转发命令退回（rc=69 或 rc=66：点名座位在本机不可用或没有同名等价座位）后改在本机执行时，在本机尝试记录上写明原因；未启用转发、转发成功或整单未执行时不出现 |
 
 转发最终结果只记一条账本；rc=69、rc=66 或命令启动失败不记转发尝试，回退后按原本机流程记账；点名座位在本机也没有时写一条 `kind: "missing_seat"` 的跳过记录，`detail` 写执行端退回原因，`rc` 为 null。回退后的本机尝试带 `forward_refused`。转发单 `seat` 保留请求的角色或座位名，`actual` 取 `forward.json` 的字符串 `actual`，否则取请求名，允许不在本机 SEATS 中；评分和周报按未知座位名展示。`substituted` 固定为 false，远端实际座位变化不计本机顶替。`run_dir` 为本机目录，保存 `task.txt`，转发命令可写 `output.md`；不记录本机文件改动统计。`forward.json` 带 `tokens` 且为合法 rollout 格式（与本机 codex 行同样的七个键、非负整数、`source: "rollout"`）时原样写入 `tokens`，否则不写此键，也不写 `tokens_null_reason`；不估算。转发单的 `effort` 仅在显式传参时记录，`model` 为 `default`。`kind` 按转发退出码是否为 0 记 `ok` / `other`；本机验收失败仍记 `ok`，`rc=4` 并写 `verify`，与本机验收语义一致。
+
+**rc=66 是点名座位的明确"执行端没执行、可以安全在本机重跑"信号**：执行端在起任何进程前发现点名座位不存在、停用、未安装、熔断，或 `agent_forward.py resolve` 找不到同名等价座位（`agent-forward-no-unique-equivalent`）时返回 66。发起端只对 66 和既有 69（执行端不可达或未接收）回退本机；其他 rc（尤其 64）表示请求、配置或身份描述有误，可能已在执行端被处理，不重跑，避免重复执行。66 与 aiw 的其它退出码（2、4、64、69、75、124、130）不冲突。
 
 ## breaker.json
 
@@ -129,7 +131,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 {"<seat>": {"count": 2, "since": "<带时区的 ISO 8601>", "kind": "transient", "reason": "provider_failed"}}
 ```
 
-`provider_failed` 一律计数；`transient` / `timeout` / `other` 只在没有产生任何文件改动时计数（写任务要求 `changed_files == 0`，统计失败不猜；只读任务没有改动概念）。任意一次成功或其它结果删除该座位的条目。读改写使用 `state/.state.lock`，计数到 2 时同时按 `unavailable` 写 `breaker.json`。展示端可选读取 `count`，当前不依赖。
+`provider_failed` 一律计数；`transient` / `timeout` / `other` 只在没有产生任何文件改动时计数（写任务要求 `changed_files == 0`，统计失败不猜；只读任务没有改动概念）。任意一次成功或其它结果删除该座位的条目。读改写使用 `state/.state.lock`；计数更新与 `breaker.json` 的写入在同一次锁内原子完成，写熔断前在同一锁内重读计数，已被成功清零的旧失败不再熔断。熔断期内被跳过的 `skipped_breaker` 不进入计数、不续期。展示端可选读取 `count`，当前不依赖。
 
 ## daily-count.json
 

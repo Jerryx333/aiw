@@ -10,6 +10,8 @@ import re
 import sys
 
 PROTOCOL = 'agent-desc-v1'
+# 执行端在起任何进程前明确拒绝：点名座位没有同名等价行（或没有唯一等价行）。
+RECEIVER_SEAT_UNAVAILABLE = 66
 NAME = re.compile(r'[A-Za-z0-9][\w.-]*')
 FIELDS = ('kind', 'adapter', 'bin', 'bin_env', 'argv_rw', 'argv_ro', 'model_args', 'provider',
           'workspace', 'account', 'env', 'free_only', 'free_guard', 'expects_credits',
@@ -129,6 +131,11 @@ def main():
 if __name__ == '__main__':
     try:
         main()
-    except Exception:
+    except Exception as error:
+        if str(error) == 'agent-forward-no-unique-equivalent':
+            # 只有"执行端没有这个座位/没有同名等价行"是明确的未执行拒收；
+            # 发起端可以安全地在本机重跑，其他 64 表示请求或配置有误，不重跑。
+            print('Agent 转发身份无法核对：执行端没有点名座位或同名等价座位，未执行', file=sys.stderr)
+            sys.exit(RECEIVER_SEAT_UNAVAILABLE)
         print('Agent 转发身份无法核对，未执行', file=sys.stderr)
         sys.exit(64)

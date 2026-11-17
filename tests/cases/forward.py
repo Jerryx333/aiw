@@ -114,6 +114,87 @@ def forward_receiver_missing_seat_runs_local():
         check('executor' not in rows[0], rows[0])
 
 
+def agent_runtime_table(seats):
+    """完整的 Agent 运行表：capabilities 分支要求 version 是除 version 外内容的摘要。"""
+    import hashlib
+    table = {'capabilities': ['agent-runtime-v1'], 'seats': seats,
+             'fallback': {}, 'self_seats': {}, 'substitute_limit': {},
+             'panel_default': [], 'panel_free': []}
+    table['version'] = hashlib.sha256(json.dumps(
+        table, ensure_ascii=False, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return table
+
+
+def identity_fixture(t, receiver_seats):
+    """假的转发命令真实调用 agent_forward.py resolve；执行端座位表由 receiver_seats 决定。"""
+    cmd, env, wd = worker_call(t)
+    cli = t / 'fakebin' / 'picked-cli'
+    cli.parent.mkdir(exist_ok=True)
+    cli.write_text('#!/bin/sh\necho "picked ok"\n')
+    cli.chmod(0o755)
+    row = {'kind': 'cli', 'bin': str(cli), 'argv_rw': ['{bin}', '{prompt}'],
+           'argv_ro': ['{bin}', '{prompt}']}
+    local = t / 'initiator.json'
+    local.write_text(json.dumps(agent_runtime_table({'picked': row})))
+    receiver = t / 'receiver.json'
+    receiver.write_text(json.dumps(agent_runtime_table(receiver_seats(row))))
+    forward = t / 'fakebin' / 'forward-identity'
+    forward.write_text('''#!/usr/bin/env python3
+import json, os, subprocess, sys
+from pathlib import Path
+if sys.argv[1:] == ['capabilities']:
+    print(json.dumps({'protocols': ['agent-desc-v1']}))
+    sys.exit(0)
+description = os.environ.get('AIW_FORWARD_AGENT_DESC')
+if not description:
+    print('缺少 Agent 身份描述', file=sys.stderr)
+    sys.exit(64)
+result = subprocess.run(
+    [sys.executable, os.environ['AGENT_FORWARD_PY'], 'resolve'],
+    input=Path(description).read_text(), text=True, capture_output=True,
+    env=dict(os.environ, AIW_CONFIG=os.environ['RECEIVER_CONFIG']))
+sys.stderr.write(result.stderr)
+sys.exit(result.returncode)
+''')
+    forward.chmod(0o755)
+    env.update(AIW_CONFIG=str(local), AIW_FORWARD=json.dumps([sys.executable, str(forward)]),
+               RECEIVER_CONFIG=str(receiver), AGENT_FORWARD_PY=str(REPO / 'agent_forward.py'))
+    cmd[2] = 'picked'
+    return cmd, env, wd, receiver
+
+
+def forward_identity_missing_named_seat_runs_local():
+    """执行端身份核对找不到同名等价座位时返回 66，发起端本机执行并记账。
+
+    假的转发命令调用真实的 agent_forward.py resolve 入口，不直接伪造退出码。
+    """
+    for name, seats in (('空座位表', lambda row: {}), ('只有等价别名', lambda row: {'alias': row})):
+        with tempfile.TemporaryDirectory() as td:
+            t = Path(td); cmd, env, wd, receiver = identity_fixture(t, seats)
+            # 两种情况共用同一个状态目录：每轮先清账本，下面才能按「只记一行」断言。
+            (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').unlink(missing_ok=True)
+            r = sh(cmd, env=env)
+            check(r.returncode == 0 and 'picked ok' in r.stdout,
+                  f'{name}：执行端没有同名等价座位时应在发起端本机执行: {r.stdout}{r.stderr}')
+            check('执行端没有点名座位 picked' in r.stderr and '改在本机执行' in r.stderr, r)
+            rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
+            check(len(rows) == 1 and rows[0]['actual'] == 'picked' and rows[0]['kind'] == 'ok'
+                  and '没有同名等价座位' in rows[0].get('forward_refused', ''), (name, rows))
+
+
+def forward_identity_other_64_does_not_rerun():
+    """身份核对的其他 64（配置/请求有误）不触发本机重跑，避免重复执行。"""
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td); cmd, env, wd, receiver = identity_fixture(t, lambda row: {})
+        receiver.write_text('not json')
+        r = sh(cmd, env=env)
+        check(r.returncode == 64 and 'picked ok' not in r.stdout and '改在本机执行' not in r.stderr,
+              f'其他 64 不应回退本机执行: {r.stdout}{r.stderr}')
+        rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
+        check(len(rows) == 1 and rows[0]['executor'] == 'forward' and rows[0]['kind'] == 'other'
+              and rows[0]['rc'] == 64, rows)
+
+
 def forward_receiver_missing_seat_both_absent():
     """本机也没有点名座位时报错，说明两台都没有。"""
     with tempfile.TemporaryDirectory() as td:
@@ -520,7 +601,7 @@ def chain_structured_retry():
               f'结构化重交没有钉在实际座位：{r.stdout}{r.stderr}')
 
 
-CASES = {fn.__name__: fn for fn in (forward_protocol, forward_named_seat_cannot_be_substituted, forward_receiver_missing_seat_runs_local, forward_receiver_missing_seat_both_absent, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt, forward_resolved_chain, receiver_explicit_chain, receiver_named_seat_unavailable_returns_66, chain_invalid_rejected, chain_structured_retry)}
+CASES = {fn.__name__: fn for fn in (forward_protocol, forward_named_seat_cannot_be_substituted, forward_receiver_missing_seat_runs_local, forward_identity_missing_named_seat_runs_local, forward_identity_other_64_does_not_rerun, forward_receiver_missing_seat_both_absent, forward_fallback_and_exclusions, forward_children_contract, forward_runner_hosts_config, forward_skips_disabled_seat, forward_carries_off_seats, forward_skips_local_only_seat, forward_stdin_prompt, forward_resolved_chain, receiver_explicit_chain, receiver_named_seat_unavailable_returns_66, chain_invalid_rejected, chain_structured_retry)}
 
 def forward_write_filters_local_readonly_backups():
     with tempfile.TemporaryDirectory() as td:
