@@ -157,7 +157,7 @@ worker 在首次写 JSON 前创建或打开同名 `<pid>.lock` 并持有 `fcntl.
 
 ## worktrees/<run-id>/、worktrees/<run-id>.json 与 worktrees/archive/
 
-`ai_worker.py` 为 `--worktree` 单从源仓库 HEAD 创建隔离工作树及 `aiw/<run-id>` 分支，创建前在原 workdir 按全部附件规则预检；附件必须已提交，工作区及索引相对 HEAD 有差异或未跟踪时返回 64，不创建工作树、分支或元数据。通过后在隔离目录读取附件，普通单附件行为不变。
+`ai_worker.py` 为 `--worktree` 单从源仓库 HEAD 创建隔离工作树及 `aiw/<run-id>` 分支，创建前在原 workdir 按全部附件规则读取和预检；允许未跟踪、已修改及已暂存的附件。每次执行将已校验字节保存为 `runs/<尝试目录>/attach/<序号>/<文件名>`（目录 700、文件 600），CLI 提示提供可读的绝对路径，文本座位仍内联；同名或重复附件各有独立路径，顶替不重读源文件。快照随运行目录清理，不进入工作树。预检失败不创建工作树、分支或元数据；快照保存失败不启动执行方。普通单附件行为不变。
 
 worker 创建时原子写入同级 `<run-id>.json`，含 `path`（工作树根目录绝对路径）、`branch`、`source_root`（源仓库根目录）、`base_head`（初始 HEAD 提交）、`created_at`（带 UTC 时区的 ISO 8601 创建时间）。本单无已跟踪/暂存改动、无未跟踪的非忽略文件且分支未前进时即时清理。worker 报告后及 `gc.py` 扫描跳过持写锁目录；已合并且干净的清理，超过固定 7 天的先由 worker 保存相对初始 HEAD 的二进制补丁 `archive/<run-id>.patch` 再强制删除工作树、分支和元数据，存档失败保留。被忽略文件不计入干净判断、不存档到补丁，删除工作树时一并删除。在初始 HEAD 上用 `git apply --binary <补丁>` 恢复。
 
@@ -222,6 +222,8 @@ workspace agent_use 写单与 CLI 写单共用 `changed_files`、`baseline-statu
 ## 临时成果与交付
 
 每次本机执行在运行目录保留 `scratch/`，通过 `AIW_SCRATCH`、`TMPDIR` 传给执行方，与运行目录一起由 gc 清理。仅 Codex workspace-write 写单增加该可写根，保持原 `/tmp` 权限。只读/文本单保留 read-only 沙箱和仓库 cwd，不额外开放 scratch，报告 `scratch_writable=false`、`network=false`；拒绝改变 cwd 或增加写根的路径参数。非 workspace-write 写单及其它适配器保持原沙箱和 cwd，报告 `scratch_writable=false`、`network=null`，不额外扩权。未支持可写 scratch 时 `--deliver` 明确失败。
+
+`scratch/cache/{go-build,go-tmp,npm,xdg,pip}` 由 worker 预建，分别对应 `GOCACHE`、`GOTMPDIR`、`npm_config_cache`、`XDG_CACHE_HOME`、`PIP_CACHE_DIR`；执行方环境和 Codex 的 `shell_environment_policy.set` 使用同一映射。不改 `GOMODCACHE`、PATH 或编译名额 shim；只读沙箱仍不增加缓存目录的写权限。
 
 `--deliver <绝对目录>` 要求执行方写 `$AIW_SCRATCH/deliver/`。仅执行、结构校验和验收成功后，由 aiw 复制普通文件，复制时计算 SHA-256；硬链接发布成功复用该摘要，已有目标则核对内容。同名同内容可重复交付，同名不同内容报错且不覆盖。总大小上限 2 GiB，拒绝软链接、硬链接及特殊文件；创建目标目录前检查全部冲突，失败回滚本次新建的文件和目录，保留原文件，回滚失败明确记入 error，不声称整批原子性。目标必须位于用户 home 内且不能是 home 本身；目标在 home 下的路径及交付相对路径均禁止任何以点开头的路径段。按请求路径和真实路径、不区分大小写禁止 `.ssh`、`.pal`、`.pal-peer`、`.gnupg`、`Library/Keychains`、`.config/op`、`Library/Application Support/1Password`（原 PRIVATE 加 `.pal-peer`），另禁止 `Library/LaunchAgents`、`Library/LaunchDaemons`、`.config/autostart`、`.local/bin`、`.claude`、`.codex`、`.config/aiw`、`.zshrc`、`.zshenv`、`.zprofile`、`.bashrc`、`.bash_profile`、`.profile`；交付相对路径执行同样检查。转发执行暂不支持交付，明确拒绝，避免写到另一台机器的同名目录。
 

@@ -191,6 +191,15 @@ def attachment_dispatch(mode, *, worktree=True, directory_alias=False):
                 note.write_text('committed attachment\n')
         elif mode == 'binary':
             note.write_bytes(b'bad\x00attachment')
+        elif mode == 'private':
+            note = wd / '.env'; note.write_text('private')
+        elif mode == 'large':
+            note.write_bytes(b'x' * 200_001)
+        elif mode == 'nonutf':
+            note.write_bytes(b'\xff')
+        elif mode == 'outside':
+            outside = root / 'outside'; outside.write_text('outside')
+            note = wd / 'link'; note.symlink_to(outside)
         if directory_alias:
             alias = root / 'alias'; alias.symlink_to(repo, target_is_directory=True)
             note = alias / note.relative_to(repo)
@@ -198,13 +207,30 @@ def attachment_dispatch(mode, *, worktree=True, directory_alias=False):
         state = root / 'state'
         branches = git(repo, 'for-each-ref', 'refs/heads')
         trees = git(repo, 'worktree', 'list', '--porcelain')
+        backend = root / 'fake-cli'
+        backend.write_text('''#!/usr/bin/env python3
+import hashlib, json, os, pathlib, re, sys
+task = sys.argv[-1]
+paths = re.findall(r'^- (.+) \\| \\d+ 字节 \\| sha256 ([a-f0-9]+)$', task, re.M)
+assert len(paths) == 1, task
+raw, expected = paths[0]
+p = pathlib.Path(raw)
+if os.environ['EXPECT_SNAPSHOT'] == '1':
+    assert p.is_absolute() and p.is_relative_to(pathlib.Path(os.environ['AIW_SCRATCH']).parent / 'attach'), p
+assert hashlib.sha256(p.read_bytes()).hexdigest().startswith(expected), p
+(pathlib.Path(os.environ['AIW_SCRATCH']) / 'attachment.json').write_text(json.dumps(dict(path=raw, content=p.read_text())))
+print('结果：成功')
+''')
+        backend.chmod(0o755)
         r = inprocess_sh([sys.executable, str(REPO / 'ai_worker.py'), 'codex', str(wd), '10',
                           str(prompt), '--no-findings', '--no-fallback', '--attach', str(note),
                           *(['--worktree'] if worktree else [])],
-                         env=dict(os.environ, AIW_STATE=str(state), FAKE_CODEX='ok'))
-        if worktree and mode != 'committed':
-            message = ('附件是二进制文件' if mode == 'binary' else
-                       f'--worktree 只能附加已提交的文件：{note}，请先提交或去掉 --worktree')
+                         env=dict(os.environ, AIW_STATE=str(state), CODEX_BIN=str(backend),
+                                  EXPECT_SNAPSHOT=str(int(worktree))))
+        rejected = {'binary': '附件是二进制文件', 'private': '凭据/密钥', 'large': '超过',
+                    'nonutf': 'UTF-8', 'outside': '不在工作目录'}
+        if mode in rejected:
+            message = rejected[mode]
             check(r.returncode == 64 and message in r.stderr, r.stderr)
             check('--worktree 创建失败' not in r.stderr, r.stderr)
             check(not (state / 'worktrees').exists(), '预检失败创建了目录/元数据')
@@ -215,26 +241,33 @@ def attachment_dispatch(mode, *, worktree=True, directory_alias=False):
             check(r.returncode == 0, r.stderr)
             row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
             task = (Path(row['run_dir']) / 'task.txt').read_text()
-            check('note.txt' in task if mode == 'committed' else 'new.txt' in task, task)
+            check(note.name in task, task)
             check(hashlib.sha256(note.read_bytes()).hexdigest()[:12] in task, '附件内容与源不一致')
             check(('worktree' in row) == worktree, str(row))
+            observed = json.loads((Path(row['run_dir']) / 'scratch/attachment.json').read_text())
+            check(observed['content'] == note.read_text(), '执行方没有读到源附件的当前内容')
+            if worktree:
+                snapshot = Path(observed['path'])
+                check(snapshot.is_file() and snapshot.read_bytes() == note.read_bytes(), '快照未保留')
+                check(snapshot.stat().st_mode & 0o777 == 0o600, '快照权限过宽')
 
 
-def worktree_attach_untracked_rejected():
+def worktree_attach_untracked_snapshot():
     attachment_dispatch('untracked')
 
 
-def worktree_attach_modified_rejected():
+def worktree_attach_modified_snapshot():
     attachment_dispatch('modified')
 
 
-def worktree_attach_staged_rejected():
+def worktree_attach_staged_snapshot():
     attachment_dispatch('staged')
     attachment_dispatch('index_only')
 
 
 def worktree_attach_source_validation():
-    attachment_dispatch('binary')
+    for mode in ('binary', 'private', 'large', 'nonutf', 'outside'):
+        attachment_dispatch(mode)
 
 
 def worktree_attach_committed():
@@ -253,12 +286,60 @@ def attach_untracked_without_worktree():
     attachment_dispatch('untracked', worktree=False)
 
 
+def worktree_attach_fallback_snapshot():
+    from support import write_legacy_local
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        repo = git_template(root / 'repo', {'tracked': 'base\n'})
+        for name in ('a/note.txt', 'b/note.txt'):
+            path = repo / name; path.parent.mkdir(); path.write_text(name)
+        prompt = root / 'prompt'; prompt.write_text('读取附件')
+        backend = root / 'fake-cli'
+        backend.write_text('''#!/usr/bin/env python3
+import hashlib, json, os, pathlib, re, sys
+run = pathlib.Path(os.environ['AIW_SCRATCH']).parent
+paths = re.findall(r'^- (.+) \\| \\d+ 字节 \\| sha256 ([a-f0-9]+)$', '\\n'.join(sys.argv[1:]), re.M)
+assert len(paths) == 3, paths
+observed = []
+for raw, expected in paths:
+    p = pathlib.Path(raw)
+    assert p.is_absolute() and p.is_relative_to(run / 'attach'), p
+    data = p.read_bytes()
+    assert hashlib.sha256(data).hexdigest().startswith(expected), p
+    observed.append([raw, data.decode()])
+(run / 'scratch/observed.json').write_text(json.dumps(observed))
+if sys.argv[1] == 'exec':
+    (pathlib.Path(os.environ['SOURCE_REPO']) / 'a/note.txt').write_text('changed after validation')
+    print('error: authentication_required', file=sys.stderr)
+    sys.exit(1)
+print('结果：成功')
+''')
+        backend.chmod(0o755)
+        local = root / 'config.json'
+        write_legacy_local(local, {'fallback': {'codex': ['claude-write']}})
+        state = root / 'state'
+        result = sh([sys.executable, str(REPO / 'ai_worker.py'), 'codex', str(repo), '10',
+                     str(prompt), '--worktree', '--no-findings', '--attach', 'a/note.txt',
+                     '--attach', 'b/note.txt', '--attach', 'a/note.txt'],
+                    env=dict(os.environ, AIW_STATE=str(state), AIW_CONFIG=str(local),
+                             CODEX_BIN=str(backend), CLAUDE_BIN=str(backend), SOURCE_REPO=str(repo)))
+        check(result.returncode == 0, result.stderr)
+        rows = [json.loads(line) for line in (state / 'seat-ledger.jsonl').read_text().splitlines()]
+        check(len(rows) == 2 and rows[0]['kind'] == 'auth' and rows[1]['kind'] == 'ok', rows)
+        for row in rows:
+            observed = json.loads((Path(row['run_dir']) / 'scratch/observed.json').read_text())
+            check([data for _, data in observed] == ['a/note.txt', 'b/note.txt', 'a/note.txt'], observed)
+            check(len({path for path, _ in observed}) == 3, '同名或重复附件快照冲突')
+        check((repo / 'a/note.txt').read_text() == 'changed after validation', '未模拟源文件变化')
+
+
 CASES = {fn.__name__: fn for fn in (
-    worktree_ignored_immediate_cleanup, worktree_attach_untracked_rejected,
-    worktree_attach_modified_rejected, worktree_attach_staged_rejected,
+    worktree_ignored_immediate_cleanup, worktree_attach_untracked_snapshot,
+    worktree_attach_modified_snapshot, worktree_attach_staged_snapshot,
     worktree_attach_source_validation, worktree_attach_committed, attach_untracked_without_worktree,
     worktree_attach_absolute_directory_symlink_committed,
     worktree_attach_absolute_directory_symlink_untracked,
+    worktree_attach_fallback_snapshot,
     worktree_empty_dispatch_cleanup, worktree_dirty_metadata, worktree_merged_cleanup,
     worktree_recent_retained, worktree_expired_binary_restore, worktree_archive_failure_retained,
     worktree_locked_skipped, worktree_missing_source_cleanup, worktree_missing_directory_prune,

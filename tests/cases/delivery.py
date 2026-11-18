@@ -27,6 +27,7 @@ s = pathlib.Path(os.environ['AIW_SCRATCH'])
 assert str(s) == os.environ['TMPDIR'] and s.is_dir()
 (s / 'deliver/sub').mkdir(parents=True)
 (s / 'deliver/sub/report.txt').write_bytes(b'result\\x00content')
+(s / 'deliver/summary.txt').write_bytes(b'summary')
 (s / 'observed.json').write_text(json.dumps(dict(argv=sys.argv[1:], cwd=os.getcwd())))
 print('结果：成功')
 ''')
@@ -59,7 +60,10 @@ print('结果：成功')
             result = json.loads((run / 'result.json').read_text())
             check(row['capabilities'] == result['capabilities'] == dict(
                 scratch_writable=True, network=policy['network_access'], deliver=True), str(result))
-            check(result['delivery']['delivered'] == [{'path': 'sub/report.txt', 'sha256': expected}], str(result))
+            check(result['delivery']['delivered'] == [
+                {'path': 'sub/report.txt', 'sha256': expected},
+                {'path': 'summary.txt', 'sha256': hashlib.sha256(b'summary').hexdigest()}], str(result))
+            check((target / 'summary.txt').read_bytes() == b'summary', '第二个文件未交付')
             check(json.loads((run / 'changes.json').read_text())['delivery'] == result['delivery'], '缺交付 changes')
             check('capabilities:' in r.stderr and 'delivery:' in r.stderr, r.stderr)
             check('[aiw delivery]' in (run / 'output.md').read_text(), '缺交付输出')
@@ -137,6 +141,59 @@ def scratch_policy_override():
         check(policy['writable_roots'] == [str(scratch)] and policy['network_access'] is False, policy)
 
 
+def scratch_cache_environment():
+    import ai_worker as worker
+    from unittest.mock import patch
+    mapping = {'GOCACHE': 'go-build', 'GOTMPDIR': 'go-tmp', 'npm_config_cache': 'npm',
+               'XDG_CACHE_HOME': 'xdg', 'PIP_CACHE_DIR': 'pip'}
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        prompt = root / 'prompt'; prompt.write_text('检查缓存和编译名额')
+        backend = root / 'fake-cli'
+        backend.write_text('''#!/usr/bin/env python3
+import json, os, pathlib, subprocess, sys
+s = pathlib.Path(os.environ['AIW_SCRATCH'])
+for key in ('GOCACHE', 'GOTMPDIR', 'npm_config_cache', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR'):
+    p = pathlib.Path(os.environ[key])
+    assert p.is_dir(), (key, p)
+    (p / 'probe').write_text(key)
+r = subprocess.run(['go', 'test', './...'], capture_output=True, text=True)
+assert r.returncode == 0, r.stderr
+keys = ('AIW_SCRATCH', 'TMPDIR', 'GOCACHE', 'GOTMPDIR', 'npm_config_cache', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR', 'GOMODCACHE')
+(s / 'observed.json').write_text(json.dumps(dict(env={key: os.environ[key] for key in keys}, argv=sys.argv[1:], go=r.stdout)))
+print('结果：成功')
+''')
+        backend.chmod(0o755)
+        fakebin = root / 'bin'; fakebin.mkdir()
+        go = fakebin / 'go'
+        go.write_text('#!/bin/sh\nprintf "%s\\n" "held=$AIW_SLOT_HELD $*"\n')
+        go.chmod(0o755)
+        env = dict(os.environ, **{key: '/old-cache' for key in mapping},
+                   GOMODCACHE='/shared/modules', AIW_BUILD_JOBS='2',
+                   CODEX_BIN=str(backend), CLAUDE_BIN=str(backend),
+                   PATH=f"{REPO / 'shims'}:{fakebin}:{os.environ['PATH']}")
+        with patch.dict(os.environ, env, clear=True):
+            check(worker.child_env()['GOCACHE'] == '/old-cache', '无 scratch 调用不应改变缓存')
+        for seat in ('codex', 'claude-write'):
+            state = root / seat
+            result = sh(['bash', str(REPO / 'bin/aiw'), seat, str(root), '10', str(prompt),
+                         '--no-fallback', '--no-findings'], env=dict(env, AIW_STATE=str(state)))
+            check(result.returncode == 0, result.stderr)
+            row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+            scratch = Path(row['run_dir']).resolve() / 'scratch'
+            observed = json.loads((scratch / 'observed.json').read_text())
+            expected = {key: str(scratch / 'cache' / subdir) for key, subdir in mapping.items()}
+            check(all(observed['env'][key] == value for key, value in expected.items()), observed)
+            check(observed['env']['GOMODCACHE'] == '/shared/modules', '模块缓存被改写')
+            check(observed['go'].strip() == 'held=1 test -p 2 ./...', observed['go'])
+            if seat == 'codex':
+                argv = observed['argv']
+                config = tomllib.loads('\n'.join(argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-c'))
+                values = config['shell_environment_policy']['set']
+                check(all(values[key] == value for key, value in expected.items()), values)
+                check('GOMODCACHE' not in values and 'PATH' not in values, values)
+
+
 def delivery_failure_contract():
     from capabilities import capabilities
     from background import DISPATCH_FLAGS
@@ -162,6 +219,7 @@ import os, pathlib, sys
 p = pathlib.Path(os.environ['AIW_SCRATCH']) / 'deliver'
 p.mkdir()
 (p / 'incomplete').write_text('must not be delivered')
+(p / 'second').write_text('must not be delivered either')
 print('unknown failure', file=sys.stderr)
 sys.exit(1)
 ''')
@@ -169,12 +227,16 @@ sys.exit(1)
         state = root / 'state'
         target = root / 'out'
         env = dict(os.environ, AIW_STATE=str(state), CODEX_BIN=str(script))
-        cmd = [sys.executable, str(REPO / 'ai_worker.py'), 'codex', str(root), '10', str(prompt),
+        cmd = ['bash', str(REPO / 'bin/aiw'), 'codex', str(root), '10', str(prompt),
                '--no-fallback', '--no-findings', '--deliver', str(target)]
         result = sh(cmd, env=env)
         check(result.returncode == 1 and not target.exists(), result.stderr)
         row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
         check(row['kind'] == 'other' and row['delivery']['error'] and not row['delivery']['delivered'], row)
+        result_json = json.loads((Path(row['run_dir']) / 'result.json').read_text())
+        check(result_json['delivery'] == row['delivery'], result_json)
+        check(len(list((Path(row['run_dir']) / 'scratch/deliver').iterdir())) == 2,
+              '假执行方未留下两个待交付文件')
         # 没有独立 scratch 写权限的适配器不伪报支持，也不启动执行方。
         cmd[2] = 'claude'
         result = sh(cmd, env=dict(env, CLAUDE_BIN=str(script)))
@@ -389,5 +451,5 @@ def delivery_size_and_hash():
 
 
 CASES = {f.__name__: f for f in (scratch_delivery, delivery_boundaries, delivery_failure_contract,
-    scratch_policy_override, scratch_readonly_paths, scratch_write_modes, scratch_readonly_context,
+    scratch_policy_override, scratch_cache_environment, scratch_readonly_paths, scratch_write_modes, scratch_readonly_context,
     delivery_execution_paths, delivery_rollback, delivery_size_and_hash)}

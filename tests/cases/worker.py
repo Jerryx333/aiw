@@ -372,14 +372,8 @@ def write_worktree_symlink_workdir():
 from pathlib import Path
 import ai_worker as w
 wd = sys.argv[1]
-assert w.validate_worktree_attachments(wd, ['tracked']) == ['tracked']
-for name in ('untracked', 'untracked-link'):
-    try:
-        w.validate_worktree_attachments(wd, [name])
-    except w.AttachError as e:
-        assert '只能附加已提交的文件' in str(e), str(e)
-    else:
-        raise AssertionError('未提交的命名路径被接受：' + name)
+assert w.read_attachments(wd, ['tracked', 'untracked', 'untracked-link']) == [
+    ('tracked', b'original\\n'), ('untracked', b'untracked\\n'), ('tracked', b'original\\n')]
 mapped, fields, root, head = w.create_task_worktree(wd, w.STATE / 'runs/direct')
 assert Path(mapped) == Path(fields['worktree']) / 'sub', mapped
 assert (Path(mapped) / 'tracked').read_text() == 'original\\n'
@@ -387,7 +381,7 @@ assert (Path(mapped) / 'tracked').read_text() == 'original\\n'
         r = inprocess_sh([sys.executable, '-c', script, str(wd)], env=env, cwd=REPO)
         check(r.returncode == 0, r.stderr)
         for attachments, expected_rc in (((), 0), (('tracked',), 0),
-                                         (('untracked',), 64), (('untracked-link',), 64)):
+                                         (('untracked',), 0), (('untracked-link',), 0)):
             cmd = [sys.executable, str(REPO / 'ai_worker.py'), 'codex', str(wd),
                    '10', str(prompt), '--worktree', '--no-fallback', '--no-findings']
             if attachments:
@@ -399,8 +393,6 @@ assert (Path(mapped) / 'tracked').read_text() == 'original\\n'
                 wt = Path(row['worktree'])
                 check((wt / 'sub/tracked').read_text() == 'changed\n', '软链子目录映射错误')
                 check((wd / 'tracked').read_text() == 'original\n', '源目录被修改')
-            else:
-                check('只能附加已提交的文件' in r.stderr, r.stderr)
 
 
 def write_worktree_validation():
