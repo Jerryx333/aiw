@@ -9,7 +9,7 @@
         --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；macOS 上写时复制带上全部被忽略的文件（.env、node_modules 等）；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
         prompt_file 写 - 时从标准输入读 prompt，不用先建临时文件。
         --text 隐含 --ro；workspace 座位禁用工具；draft 自动启用。
-        --attach 可重复，路径相对 workdir；CLI 座位收校验后的文件清单，其它座位收内联全文。
+        --attach 可重复，路径相对 workdir；Codex 座位收校验后的文件清单，其它座位收内联全文。
         拒绝 .env/密钥/证书类文件、二进制文件、workdir 之外的文件；附件合计上限 200KB。
     aiw doctor            # 每个座位：可执行文件路径、版本、熔断状态、主机名
 
@@ -267,20 +267,41 @@ def dispatch_chain(seat, flags, explicit=None):
     return chain[0], role, chain
 
 
-def scratch_environment(scratch) -> dict:
+def scratch_environment(scratch, *, cache_write=False) -> dict:
     scratch = Path(scratch)
-    caches = {'GOCACHE': 'go-build', 'GOTMPDIR': 'go-tmp', 'npm_config_cache': 'npm',
-              'XDG_CACHE_HOME': 'xdg', 'PIP_CACHE_DIR': 'pip'}
-    return {'AIW_SCRATCH': str(scratch), 'TMPDIR': str(scratch),
-            **{key: str(scratch / 'cache' / name) for key, name in caches.items()}}
+    env = {'AIW_SCRATCH': str(scratch), 'TMPDIR': str(scratch),
+           'GOTMPDIR': str(scratch / 'go-tmp')}
+    if cache_write:
+        # 仅 workspace-write 重定向缓存。Go 明确支持多进程共享；其它缓存
+        # 未对所有受支持版本保证并发安全，按单隔离并在执行结束后清理。
+        env.update(GOCACHE=str(STATE.resolve() / 'cache/go-build'),
+                   npm_config_cache=str(scratch / 'cache/npm'),
+                   XDG_CACHE_HOME=str(scratch / 'cache/xdg'),
+                   PIP_CACHE_DIR=str(scratch / 'cache/pip'))
+    return env
 
 
-def child_env(scratch=None) -> dict:
+def child_env(scratch=None, *, cache_write=False) -> dict:
     # 外包出去的 claude -p / codex exec 也会触发各自的派单钩子；标记嵌套，钩子见到就不再派单（防套娃）
     env = dict(os.environ, AIW_NESTED="1")
     if scratch is not None:
-        env.update(scratch_environment(scratch))
+        env.update(scratch_environment(scratch, cache_write=cache_write))
     return env
+
+
+def cleanup_scratch(scratch: Path) -> None:
+    """只清本单临时内容；保留 deliver 供后续交付和核对，不跟随软链。"""
+    from delivery import directory
+    if not scratch.exists() and not scratch.is_symlink():
+        return
+    with directory(scratch) as fd:
+        for name in os.listdir(fd):
+            if name == 'deliver':
+                continue
+            if stat.S_ISDIR(os.stat(name, dir_fd=fd, follow_symlinks=False).st_mode):
+                shutil.rmtree(name, dir_fd=fd)
+            else:
+                os.unlink(name, dir_fd=fd)
 
 
 def toml_value(value) -> str:
@@ -2200,6 +2221,14 @@ def seat_adapter(seat: str) -> str | None:
     return cfg.get("adapter") if cfg.get("kind") == "cli" else None
 
 
+def attachment_kind(seat: str, text: bool) -> str:
+    if seat_adapter(seat) == 'codex':
+        return 'cli'
+    cfg = SEATS['seats'][seat]
+    return ('workspace' if not text and (cfg.get('kind') == 'cli' or agent_use_workspace(cfg))
+            else 'agent_use')
+
+
 def codex_workspace_write(seat: str, ro: bool) -> bool:
     cfg = SEATS["seats"][seat]
     argv = cfg["argv_ro"] if ro else cfg["argv_rw"]
@@ -2275,12 +2304,13 @@ def scratch_argv(seat, argv, scratch, workdir, ro, net, prompt):
                  or a.startswith('--sandbox=') for a in argv if a != prompt)):
         return argv
     argv = list(argv)
-    roots = [] if ro else [*worktree_writable_roots(workdir), str(scratch)]
+    environment = scratch_environment(scratch, cache_write=not ro)
+    roots = [] if ro else [*worktree_writable_roots(workdir), str(scratch), environment['GOCACHE']]
     settings = {
         'sandbox_workspace_write.writable_roots': roots,
         'sandbox_workspace_write.network_access': net and not ro,
         **{'shell_environment_policy.set.' + key: value
-           for key, value in scratch_environment(scratch).items()},
+           for key, value in environment.items()},
     }
     if ro:
         settings.update({'sandbox_workspace_write.exclude_tmpdir_env_var': True,
@@ -2332,83 +2362,93 @@ def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effor
     run_dir = (run_dir or new_run_dir(seat)).resolve()
     scratch = run_dir / 'scratch'
     codex = seat_adapter(seat) == 'codex'
+    scratch_writable = codex and not ro and codex_workspace_write(seat, ro)
     capabilities = {'scratch_writable': False, 'network': None, 'deliver': False}
+    created = False
     try:
         scratch.mkdir(parents=True, mode=0o700, exist_ok=False)
-        for key, value in scratch_environment(scratch).items():
+        created = True
+        for key, value in scratch_environment(scratch, cache_write=scratch_writable).items():
             if key not in ('AIW_SCRATCH', 'TMPDIR'):
-                Path(value).mkdir(parents=True, mode=0o700)
+                if key == 'GOCACHE':
+                    from delivery import directory
+                    with directory(Path(value), create=True):
+                        pass
+                else:
+                    Path(value).mkdir(parents=True, mode=0o700)
     except OSError as error:
+        if created:
+            cleanup_scratch(scratch)
         return dict(rc=1, out='', err=f'scratch 创建失败：{error}', kind='scratch', secs=0,
                     run_dir=str(run_dir), capabilities=capabilities)
-    scratch_writable = codex and not ro and codex_workspace_write(seat, ro)
-    capabilities.update(scratch_writable=scratch_writable,
-                        network=False if codex and ro else net if scratch_writable else None,
-                        deliver=bool(deliver and scratch_writable))
-    if deliver and not scratch_writable:
-        return dict(rc=1, out='', err='当前适配器不支持可写 scratch，无法 --deliver；未额外扩权',
-                    kind='delivery', secs=0, run_dir=str(run_dir), capabilities=capabilities)
-    if not net and not (scratch_writable or codex and ro):
-        return dict(rc=64, out='', err='当前适配器无法保证 --no-net，拒绝执行', kind='network',
-                    secs=0, run_dir=str(run_dir), capabilities=capabilities)
-    attachments = ''
-    if attachment_files:
-        try:
-            snapshots = snapshot_attachments(run_dir, attachment_files)
-        except OSError as error:
-            return dict(rc=1, out='', err=f'附件快照保存失败：{error}', kind='attachment', secs=0,
-                        run_dir=str(run_dir), capabilities=capabilities)
-        cfg = SEATS['seats'][seat]
-        kind = 'cli' if agent_use_workspace(cfg) and not text else cfg.get('kind')
-        attachments = render_attachments(snapshots, kind)
-    notice = f'\n\n本单原工作目录：{workdir}。AIW_SCRATCH={scratch}，TMPDIR 指向同一目录。'
-    if scratch_writable:
-        notice += 'scratch 可写并保留供验收。'
-    elif codex and ro:
-        notice += '只读任务保留原 read-only 沙箱和仓库工作目录；scratch_writable=false，scratch 未开放写权限。'
-    else:
-        notice += '当前适配器不支持单独放开 scratch 写权限，scratch_writable=false，未额外扩权。'
-    if deliver:
-        notice += '\n成果交付约定：把所有交付文件写入 $AIW_SCRATCH/deliver/，由 aiw 在成功后复制到目标；不要自行写目标目录。'
-    suffix = min((prompt.index(marker) for marker in ('\n\n' + findings.SUFFIX, PANEL_FORMAT)
-                  if marker in prompt), default=len(prompt))
-    prompt = prompt[:suffix] + attachments + notice + prompt[suffix:]
-    t0 = time.time()
-    context = {"out": "", "err": "", "archived": False, "output_saved": False,
-               'capabilities': capabilities}
     try:
-        with deferred_signals():
-            result = _run_seat(seat, prompt, workdir, timeout, ro, effort, fixed_model, net, baseline_status, text=text,
-                               **({"run_dir": run_dir} if run_dir is not None else {}))
-            context.update(result)
-            context["archived"] = True
-            result.setdefault('run_dir', str(run_dir))
-            if result.get('kind') in ('not_installed', 'invalid_argv', 'locked', 'account'):
-                capabilities.update(scratch_writable=False, network=None, deliver=False)
-            result['capabilities'] = capabilities
-            write_run_file(run_dir / 'result.json', json.dumps({k: result[k] for k in ('rc', 'kind', 'capabilities')}))
-            if not codex:
-                print('[ai-worker] 当前适配器未额外开放 scratch 写权限；network 未核实', file=sys.stderr)
-        # dispatch 的记账延迟区仍在外层：在尝试边界提取信号，先记 interrupted 再退出。
-        if PENDING_SIGNAL is not None:
-            code, PENDING_SIGNAL = PENDING_SIGNAL, None
-            raise RunInterrupted(code)
-        return result
-    except RunInterrupted as e:
-        # 已归档结果不得被异常的空默认输出覆盖，也不创建第二个目录。
-        if not context["archived"]:
-            context.update(e.result)
-            if "run_dir" not in context:
-                run_dir = run_dir or new_run_dir(seat)
-                save_baseline(run_dir, baseline_status)
-                context["run_dir"] = str(run_dir) if write_run_file(run_dir / "task.txt", prompt) else None
-            if context["run_dir"] is not None:
-                run_dir = Path(context["run_dir"])
-                context["output_saved"] = write_run_file(run_dir / "output.md", context["out"])
-                write_run_file(run_dir / "stderr.txt", context["err"], 200 * 1024)
-        e.result.update(context, kind="interrupted", rc=e.code, secs=round(time.time() - t0, 1))
-        write_run_file(run_dir / 'result.json', json.dumps({k: e.result[k] for k in ('rc', 'kind', 'capabilities')}))
-        raise
+        capabilities.update(scratch_writable=scratch_writable,
+                            network=False if codex and ro else net if scratch_writable else None,
+                            deliver=bool(deliver and scratch_writable))
+        if deliver and not scratch_writable:
+            return dict(rc=1, out='', err='当前适配器不支持可写 scratch，无法 --deliver；未额外扩权',
+                        kind='delivery', secs=0, run_dir=str(run_dir), capabilities=capabilities)
+        if not net and not (scratch_writable or codex and ro):
+            return dict(rc=64, out='', err='当前适配器无法保证 --no-net，拒绝执行', kind='network',
+                        secs=0, run_dir=str(run_dir), capabilities=capabilities)
+        attachments = ''
+        if attachment_files:
+            try:
+                snapshots = snapshot_attachments(run_dir, attachment_files)
+            except OSError as error:
+                return dict(rc=1, out='', err=f'附件快照保存失败：{error}', kind='attachment', secs=0,
+                            run_dir=str(run_dir), capabilities=capabilities)
+            attachments = render_attachments(snapshots, attachment_kind(seat, text))
+        notice = f'\n\n本单原工作目录：{workdir}。AIW_SCRATCH={scratch}，TMPDIR 指向同一目录。'
+        if scratch_writable:
+            notice += 'scratch 可写；执行结束清理临时内容，仅保留 deliver/ 供交付和核对。'
+        elif codex and ro:
+            notice += '只读任务保留原 read-only 沙箱和仓库工作目录；scratch_writable=false，scratch 未开放写权限。'
+        else:
+            notice += '当前适配器不支持单独放开 scratch 写权限，scratch_writable=false，未额外扩权。'
+        if deliver:
+            notice += '\n成果交付约定：把所有交付文件写入 $AIW_SCRATCH/deliver/，由 aiw 在成功后复制到目标；不要自行写目标目录。'
+        suffix = min((prompt.index(marker) for marker in ('\n\n' + findings.SUFFIX, PANEL_FORMAT)
+                      if marker in prompt), default=len(prompt))
+        prompt = prompt[:suffix] + attachments + notice + prompt[suffix:]
+        t0 = time.time()
+        context = {"out": "", "err": "", "archived": False, "output_saved": False,
+                   'capabilities': capabilities}
+        try:
+            with deferred_signals():
+                result = _run_seat(seat, prompt, workdir, timeout, ro, effort, fixed_model, net, baseline_status, text=text,
+                                   **({"run_dir": run_dir} if run_dir is not None else {}))
+                context.update(result)
+                context["archived"] = True
+                result.setdefault('run_dir', str(run_dir))
+                if result.get('kind') in ('not_installed', 'invalid_argv', 'locked', 'account'):
+                    capabilities.update(scratch_writable=False, network=None, deliver=False)
+                result['capabilities'] = capabilities
+                write_run_file(run_dir / 'result.json', json.dumps({k: result[k] for k in ('rc', 'kind', 'capabilities')}))
+                if not codex:
+                    print('[ai-worker] 当前适配器未额外开放 scratch 写权限；network 未核实', file=sys.stderr)
+            # dispatch 的记账延迟区仍在外层：在尝试边界提取信号，先记 interrupted 再退出。
+            if PENDING_SIGNAL is not None:
+                code, PENDING_SIGNAL = PENDING_SIGNAL, None
+                raise RunInterrupted(code)
+            return result
+        except RunInterrupted as e:
+            # 已归档结果不得被异常的空默认输出覆盖，也不创建第二个目录。
+            if not context["archived"]:
+                context.update(e.result)
+                if "run_dir" not in context:
+                    run_dir = run_dir or new_run_dir(seat)
+                    save_baseline(run_dir, baseline_status)
+                    context["run_dir"] = str(run_dir) if write_run_file(run_dir / "task.txt", prompt) else None
+                if context["run_dir"] is not None:
+                    run_dir = Path(context["run_dir"])
+                    context["output_saved"] = write_run_file(run_dir / "output.md", context["out"])
+                    write_run_file(run_dir / "stderr.txt", context["err"], 200 * 1024)
+            e.result.update(context, kind="interrupted", rc=e.code, secs=round(time.time() - t0, 1))
+            write_run_file(run_dir / 'result.json', json.dumps({k: e.result[k] for k in ('rc', 'kind', 'capabilities')}))
+            raise
+    finally:
+        cleanup_scratch(scratch)
 
 
 def readonly_argv_error(seat, argv, prompt=None):
@@ -2469,7 +2509,8 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
     locked = preflight(SEATS["seats"][seat])
     if locked:
         return locked
-    env = child_env(run_dir.resolve() / 'scratch' if run_dir else None)
+    env = child_env(run_dir.resolve() / 'scratch' if run_dir else None,
+                    cache_write=not ro and codex_workspace_write(seat, ro))
     if SEATS["seats"][seat].get("account") is not None:
         reason = apply_account(seat, argv, env)
         if reason:
@@ -3132,13 +3173,16 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     except OSError as exc:
         print(f'[ai-worker] 转发不可用（{exc}），改在本机执行', file=sys.stderr)
         return None
-    with proc:
-        try:
-            rc = proc.wait()
-        except RunInterrupted as exc:
-            proc.send_signal(signal.SIGINT if exc.code == 130 else signal.SIGTERM)
-            proc.wait()
-            interruption, rc = exc, exc.code
+    try:
+        with proc:
+            try:
+                rc = proc.wait()
+            except RunInterrupted as exc:
+                proc.send_signal(signal.SIGINT if exc.code == 130 else signal.SIGTERM)
+                proc.wait()
+                interruption, rc = exc, exc.code
+    finally:
+        cleanup_scratch(scratch)
     if rc == RECEIVER_SEAT_UNAVAILABLE:
         # 执行端在起任何进程前确认点名座位不存在、停用、未安装、熔断，或身份核对
         # 找不到同名等价座位；不能换个座位顶上。66 只表示"没执行"。
@@ -3552,7 +3596,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             if kind != "cli" and not attachments_warned:
                                 warn_large_attachments(attachment_files)
                                 attachments_warned = True
-                            task_prompt = prompt + ('' if task_run_dir is not None else render_attachments(attachment_files, kind)) + dispatch_reminders(s, actual_ro, workdir, net, verify)
+                            task_prompt = prompt + ('' if task_run_dir is not None else render_attachments(attachment_files, attachment_kind(s, actual_text))) + dispatch_reminders(s, actual_ro, workdir, net, verify)
                             if actual_collect:
                                 task_prompt += "\n\n" + findings.SUFFIX
                             if os.environ.get("AIW_PANEL_FORMAT") == "1" and os.environ.get("AIW_PANEL_DIR"):

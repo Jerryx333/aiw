@@ -11,6 +11,7 @@ import json, os, sys
 from pathlib import Path
 Path(os.environ['FORWARD_LOG']).write_text(json.dumps({'argv': sys.argv[1:], 'env': dict(os.environ)}))
 run = Path(os.environ['AIW_FORWARD_RUN_DIR'])
+(run / 'scratch/temporary').write_text('remove after forwarding')
 state = Path(os.environ['AIW_STATE'])
 inflight = state / 'inflight' / (str(os.getppid()) + '.json')
 snapshot = {'argv': sys.argv[1:], 'env': dict(os.environ),
@@ -53,6 +54,7 @@ def forward_protocol():
             check(child['AIW_NO_FORWARD'] == '1' and child['AIW_MAIN'] == 'claude' and child['AIW_FORWARD_MODE'] == mode, child)
             run = Path(child['AIW_FORWARD_RUN_DIR'])
             check(run.is_absolute() and (run / 'task.txt').exists() and '全文：' in r.stderr, r)
+            check(not list((run / 'scratch').iterdir()), '转发运行留下临时内容')
         check((wd / 'verified').read_text().strip() == 'verified', 'verify not local')
         rows = [json.loads(line) for line in (Path(env['AIW_STATE']) / 'seat-ledger.jsonl').read_text().splitlines()]
         check(len(rows) == 3 and all(row['executor'] == 'forward' and row['actual'] == 'remote-seat' and row['forward_host'] == 'remote' for row in rows), rows)

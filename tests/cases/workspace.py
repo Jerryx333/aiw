@@ -52,7 +52,7 @@ def workspace_access_ro_rw():
                 check(r.returncode == 0 and f'{network_flag} 不生效' in r.stderr, r.stderr)
                 run_dir = sorted((t / 'state/runs').iterdir(), key=lambda p: p.stat().st_mtime_ns)[-1]
                 prompt = (run_dir / 'task.txt').read_text()
-                check('code.txt |' in prompt and 'repository material' not in prompt, prompt)
+                check('repository material' in prompt and '由 aiw 读出内联' in prompt, prompt)
                 call = calls(t)[-1]; argv = call['argv']
                 check(call['access'] == ('ro' if readonly else 'rw') and call['workdir'] == str(wd.resolve()), call)
                 check('--workdir' in argv and '--access' in argv and '--require-no-tools' not in argv, call)

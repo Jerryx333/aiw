@@ -218,7 +218,7 @@ p = pathlib.Path(raw)
 if os.environ['EXPECT_SNAPSHOT'] == '1':
     assert p.is_absolute() and p.is_relative_to(pathlib.Path(os.environ['AIW_SCRATCH']).parent / 'attach'), p
 assert hashlib.sha256(p.read_bytes()).hexdigest().startswith(expected), p
-(pathlib.Path(os.environ['AIW_SCRATCH']) / 'attachment.json').write_text(json.dumps(dict(path=raw, content=p.read_text())))
+(pathlib.Path(os.environ['AIW_SCRATCH']).parent / 'attachment.json').write_text(json.dumps(dict(path=raw, content=p.read_text())))
 print('结果：成功')
 ''')
         backend.chmod(0o755)
@@ -244,7 +244,7 @@ print('结果：成功')
             check(note.name in task, task)
             check(hashlib.sha256(note.read_bytes()).hexdigest()[:12] in task, '附件内容与源不一致')
             check(('worktree' in row) == worktree, str(row))
-            observed = json.loads((Path(row['run_dir']) / 'scratch/attachment.json').read_text())
+            observed = json.loads((Path(row['run_dir']) / 'attachment.json').read_text())
             check(observed['content'] == note.read_text(), '执行方没有读到源附件的当前内容')
             if worktree:
                 snapshot = Path(observed['path'])
@@ -299,6 +299,13 @@ def worktree_attach_fallback_snapshot():
 import hashlib, json, os, pathlib, re, sys
 run = pathlib.Path(os.environ['AIW_SCRATCH']).parent
 paths = re.findall(r'^- (.+) \\| \\d+ 字节 \\| sha256 ([a-f0-9]+)$', '\\n'.join(sys.argv[1:]), re.M)
+if sys.argv[1] != 'exec':
+    task = '\\n'.join(sys.argv[1:])
+    assert task.count('a/note.txt') >= 2 and 'changed after validation' not in task, task
+    assert 'b/note.txt' in task and '由 aiw 读出内联' in task, task
+    assert not paths, paths
+    print('结果：成功')
+    sys.exit(0)
 assert len(paths) == 3, paths
 observed = []
 for raw, expected in paths:
@@ -307,7 +314,7 @@ for raw, expected in paths:
     data = p.read_bytes()
     assert hashlib.sha256(data).hexdigest().startswith(expected), p
     observed.append([raw, data.decode()])
-(run / 'scratch/observed.json').write_text(json.dumps(observed))
+(run / 'observed.json').write_text(json.dumps(observed))
 if sys.argv[1] == 'exec':
     (pathlib.Path(os.environ['SOURCE_REPO']) / 'a/note.txt').write_text('changed after validation')
     print('error: authentication_required', file=sys.stderr)
@@ -326,10 +333,11 @@ print('结果：成功')
         check(result.returncode == 0, result.stderr)
         rows = [json.loads(line) for line in (state / 'seat-ledger.jsonl').read_text().splitlines()]
         check(len(rows) == 2 and rows[0]['kind'] == 'auth' and rows[1]['kind'] == 'ok', rows)
-        for row in rows:
-            observed = json.loads((Path(row['run_dir']) / 'scratch/observed.json').read_text())
+        for row in rows[:1]:
+            observed = json.loads((Path(row['run_dir']) / 'observed.json').read_text())
             check([data for _, data in observed] == ['a/note.txt', 'b/note.txt', 'a/note.txt'], observed)
             check(len({path for path, _ in observed}) == 3, '同名或重复附件快照冲突')
+        check('a/note.txt\n' in (Path(rows[1]['run_dir']) / 'task.txt').read_text(), '顶替附件缺少原始内容')
         check((repo / 'a/note.txt').read_text() == 'changed after validation', '未模拟源文件变化')
 
 

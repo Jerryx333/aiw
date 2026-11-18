@@ -28,7 +28,7 @@ assert str(s) == os.environ['TMPDIR'] and s.is_dir()
 (s / 'deliver/sub').mkdir(parents=True)
 (s / 'deliver/sub/report.txt').write_bytes(b'result\\x00content')
 (s / 'deliver/summary.txt').write_bytes(b'summary')
-(s / 'observed.json').write_text(json.dumps(dict(argv=sys.argv[1:], cwd=os.getcwd())))
+(s.parent / 'observed.json').write_text(json.dumps(dict(argv=sys.argv[1:], cwd=os.getcwd())))
 print('结果：成功')
 ''')
         backend.chmod(0o755)
@@ -43,12 +43,12 @@ print('结果：成功')
             row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
             run = Path(row['run_dir'])
             scratch = run.resolve() / 'scratch'
-            observed = json.loads((scratch / 'observed.json').read_text())
+            observed = json.loads((scratch.parent / 'observed.json').read_text())
             argv = observed['argv']
             configs = '\n'.join(argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-c')
             config = tomllib.loads(configs)
             policy = config['sandbox_workspace_write']
-            check(policy['writable_roots'] == [str(scratch)], configs)
+            check(policy['writable_roots'] == [str(scratch), str(state / 'cache/go-build')], configs)
             readonly = '--ro' in flags or '--text' in flags
             check(policy['network_access'] == (not readonly and '--no-net' not in flags), configs)
             check('exclude_slash_tmp' not in policy and 'exclude_tmpdir_env_var' not in policy, configs)
@@ -64,6 +64,7 @@ print('结果：成功')
                 {'path': 'sub/report.txt', 'sha256': expected},
                 {'path': 'summary.txt', 'sha256': hashlib.sha256(b'summary').hexdigest()}], str(result))
             check((target / 'summary.txt').read_bytes() == b'summary', '第二个文件未交付')
+            check([p.name for p in scratch.iterdir()] == ['deliver'], '临时内容未清理或交付源丢失')
             check(json.loads((run / 'changes.json').read_text())['delivery'] == result['delivery'], '缺交付 changes')
             check('capabilities:' in r.stderr and 'delivery:' in r.stderr, r.stderr)
             check('[aiw delivery]' in (run / 'output.md').read_text(), '缺交付输出')
@@ -138,14 +139,13 @@ def scratch_policy_override():
         argv = worker.scratch_argv('codex', argv, scratch, td, False, False, 'TASK')
         configs = '\n'.join(argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-c')
         policy = tomllib.loads(configs)['sandbox_workspace_write']
-        check(policy['writable_roots'] == [str(scratch)] and policy['network_access'] is False, policy)
+        check(policy['writable_roots'] == [str(scratch), str(worker.STATE.resolve() / 'cache/go-build')] and policy['network_access'] is False, policy)
 
 
 def scratch_cache_environment():
     import ai_worker as worker
     from unittest.mock import patch
-    mapping = {'GOCACHE': 'go-build', 'GOTMPDIR': 'go-tmp', 'npm_config_cache': 'npm',
-               'XDG_CACHE_HOME': 'xdg', 'PIP_CACHE_DIR': 'pip'}
+    caches = ('GOCACHE', 'npm_config_cache', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR')
     with tempfile.TemporaryDirectory() as td:
         root = Path(td).resolve()
         prompt = root / 'prompt'; prompt.write_text('检查缓存和编译名额')
@@ -153,14 +153,21 @@ def scratch_cache_environment():
         backend.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 s = pathlib.Path(os.environ['AIW_SCRATCH'])
-for key in ('GOCACHE', 'GOTMPDIR', 'npm_config_cache', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR'):
-    p = pathlib.Path(os.environ[key])
-    assert p.is_dir(), (key, p)
-    (p / 'probe').write_text(key)
+cache_write = os.environ['EXPECT_CACHE'] == '1'
+keys = ('GOCACHE', 'npm_config_cache', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR')
+if cache_write:
+    for key in keys:
+        p = pathlib.Path(os.environ[key])
+        assert p.is_dir(), (key, p)
+        (p / 'probe').write_text(key)
+else:
+    assert all(key not in os.environ for key in keys), dict(os.environ)
+(pathlib.Path(os.environ['GOTMPDIR']) / 'compile.tmp').write_text('temporary')
+(s / 'temporary').write_text('temporary')
 r = subprocess.run(['go', 'test', './...'], capture_output=True, text=True)
 assert r.returncode == 0, r.stderr
-keys = ('AIW_SCRATCH', 'TMPDIR', 'GOCACHE', 'GOTMPDIR', 'npm_config_cache', 'XDG_CACHE_HOME', 'PIP_CACHE_DIR', 'GOMODCACHE')
-(s / 'observed.json').write_text(json.dumps(dict(env={key: os.environ[key] for key in keys}, argv=sys.argv[1:], go=r.stdout)))
+keys += ('AIW_SCRATCH', 'TMPDIR', 'GOTMPDIR', 'GOMODCACHE')
+(s.parent / 'observed.json').write_text(json.dumps(dict(env={key: os.environ.get(key) for key in keys}, argv=sys.argv[1:], go=r.stdout)))
 print('结果：成功')
 ''')
         backend.chmod(0o755)
@@ -168,30 +175,105 @@ print('结果：成功')
         go = fakebin / 'go'
         go.write_text('#!/bin/sh\nprintf "%s\\n" "held=$AIW_SLOT_HELD $*"\n')
         go.chmod(0o755)
-        env = dict(os.environ, **{key: '/old-cache' for key in mapping},
-                   GOMODCACHE='/shared/modules', AIW_BUILD_JOBS='2',
+        env = {key: value for key, value in os.environ.items() if key not in caches}
+        env.update(GOMODCACHE='/shared/modules', AIW_BUILD_JOBS='2',
                    CODEX_BIN=str(backend), CLAUDE_BIN=str(backend),
                    PATH=f"{REPO / 'shims'}:{fakebin}:{os.environ['PATH']}")
-        with patch.dict(os.environ, env, clear=True):
-            check(worker.child_env()['GOCACHE'] == '/old-cache', '无 scratch 调用不应改变缓存')
-        for seat in ('codex', 'claude-write'):
-            state = root / seat
-            result = sh(['bash', str(REPO / 'bin/aiw'), seat, str(root), '10', str(prompt),
-                         '--no-fallback', '--no-findings'], env=dict(env, AIW_STATE=str(state)))
-            check(result.returncode == 0, result.stderr)
-            row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
-            scratch = Path(row['run_dir']).resolve() / 'scratch'
-            observed = json.loads((scratch / 'observed.json').read_text())
-            expected = {key: str(scratch / 'cache' / subdir) for key, subdir in mapping.items()}
-            check(all(observed['env'][key] == value for key, value in expected.items()), observed)
-            check(observed['env']['GOMODCACHE'] == '/shared/modules', '模块缓存被改写')
-            check(observed['go'].strip() == 'held=1 test -p 2 ./...', observed['go'])
-            if seat == 'codex':
-                argv = observed['argv']
-                config = tomllib.loads('\n'.join(argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-c'))
-                values = config['shell_environment_policy']['set']
-                check(all(values[key] == value for key, value in expected.items()), values)
-                check('GOMODCACHE' not in values and 'PATH' not in values, values)
+        with patch.dict(os.environ, dict(env, **{key: '/old-cache' for key in caches}), clear=True):
+            check(all(worker.child_env(root)[key] == '/old-cache' for key in caches),
+                  '其它适配器的已有缓存设置被覆盖')
+        for seat, flags in (('codex', ()), ('claude-write', ()), ('codex', ('--ro',))):
+            state = root / (seat + ('-ro' if flags else ''))
+            cache_write = seat == 'codex' and not flags
+            # 连续两单必须复用同一共享缓存，而非清掉上一单的缓存。
+            for attempt in range(2 if cache_write else 1):
+                result = sh(['bash', str(REPO / 'bin/aiw'), seat, str(root), '10', str(prompt),
+                             '--no-fallback', '--no-findings', *flags],
+                            env=dict(env, AIW_STATE=str(state), EXPECT_CACHE=str(int(cache_write))))
+                check(result.returncode == 0, result.stderr)
+                row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+                scratch = Path(row['run_dir']).resolve() / 'scratch'
+                observed = json.loads((scratch.parent / 'observed.json').read_text())
+                check(not list(scratch.iterdir()), '临时文件或每单缓存没有清理')
+                check(observed['env']['GOTMPDIR'] == str(scratch / 'go-tmp'), observed)
+                check(observed['env']['GOMODCACHE'] == '/shared/modules', '模块缓存被改写')
+                check(observed['go'].strip() == 'held=1 test -p 2 ./...', observed['go'])
+                if cache_write:
+                    expected = dict(GOCACHE=str(state / 'cache/go-build'),
+                                    npm_config_cache=str(scratch / 'cache/npm'),
+                                    XDG_CACHE_HOME=str(scratch / 'cache/xdg'),
+                                    PIP_CACHE_DIR=str(scratch / 'cache/pip'))
+                    check(all(observed['env'][key] == value for key, value in expected.items()), observed)
+                    shared = state / 'cache/go-build'
+                    if attempt:
+                        check((shared / 'retained').read_text() == 'keep', '共享缓存被清理')
+                    (shared / 'retained').write_text('keep')
+                else:
+                    check(all(observed['env'][key] is None for key in caches), observed)
+                    check(not (state / 'cache').exists(), '非 workspace-write 创建了共享缓存')
+                if seat == 'codex':
+                    argv = observed['argv']
+                    config = tomllib.loads('\n'.join(argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == '-c'))
+                    values = config['shell_environment_policy']['set']
+                    if cache_write:
+                        check(all(values[key] == value for key, value in expected.items()), values)
+                        check(config['sandbox_workspace_write']['writable_roots'] == [str(scratch), str(shared)], config)
+                    else:
+                        check(not set(caches).intersection(values) and scratch_readonly(argv), config)
+                    check('GOMODCACHE' not in values and 'PATH' not in values, values)
+
+
+def scratch_cleanup_boundaries():
+    import ai_worker as worker
+    from unittest.mock import patch
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td).resolve()
+        state = root / 'state'
+        external = root / 'external'; external.mkdir()
+        (external / 'keep').write_text('untouched')
+        for outcome in ('ok', 'error', 'timeout', 'interrupt', 'exception'):
+            run = root / outcome
+            def execute(*args, **kwargs):
+                scratch = kwargs['run_dir'] / 'scratch'
+                (scratch / 'deliver').mkdir()
+                (scratch / 'deliver/report').write_text('retain')
+                (scratch / 'temporary').write_text('remove')
+                (scratch / 'link').symlink_to(external, target_is_directory=True)
+                (scratch / 'nested').mkdir()
+                (scratch / 'nested/link').symlink_to(external, target_is_directory=True)
+                if outcome == 'interrupt':
+                    raise worker.RunInterrupted(130)
+                if outcome == 'exception':
+                    raise RuntimeError('injected failure')
+                return dict(rc=0 if outcome == 'ok' else 124 if outcome == 'timeout' else 1,
+                            kind=outcome, out='', err='', secs=0)
+            with patch.object(worker, 'STATE', state), patch.object(worker, '_run_seat', execute):
+                try:
+                    worker.run_seat('codex', 'task', str(root), 10, False, run_dir=run)
+                except (worker.RunInterrupted, RuntimeError):
+                    check(outcome in ('interrupt', 'exception'), outcome)
+                else:
+                    check(outcome not in ('interrupt', 'exception'), '异常被吞掉')
+            check([p.name for p in (run / 'scratch').iterdir()] == ['deliver'], outcome)
+            check((run / 'scratch/deliver/report').read_text() == 'retain', outcome)
+            check((external / 'keep').read_text() == 'untouched', '清理跟随了软链')
+        # 不清理未由本次创建的 scratch，也不通过缓存软链开放其它目录。
+        existing = root / 'existing'; (existing / 'scratch').mkdir(parents=True)
+        (existing / 'scratch/keep').write_text('existing')
+        with patch.object(worker, 'STATE', state), patch.object(worker, '_run_seat') as execute:
+            result = worker.run_seat('codex', 'task', str(root), 10, False, run_dir=existing)
+            check(result['kind'] == 'scratch' and not execute.called, result)
+            check((existing / 'scratch/keep').read_text() == 'existing', '清理了已有 scratch')
+        for name in ('cache', 'cache/go-build'):
+            blocked = root / ('blocked-' + name.replace('/', '-')); blocked.mkdir()
+            link = blocked / name; link.parent.mkdir(exist_ok=True)
+            link.symlink_to(external, target_is_directory=True)
+            run = root / ('run-' + blocked.name)
+            with patch.object(worker, 'STATE', blocked), patch.object(worker, '_run_seat') as execute:
+                result = worker.run_seat('codex', 'task', str(root), 10, False, run_dir=run)
+                check(result['kind'] == 'scratch' and not execute.called, result)
+            check(not list((run / 'scratch').iterdir()), '初始化失败未清临时目录')
+            check(list(external.iterdir()) == [external / 'keep'], '缓存软链修改了外部目录')
 
 
 def delivery_failure_contract():
@@ -451,5 +533,5 @@ def delivery_size_and_hash():
 
 
 CASES = {f.__name__: f for f in (scratch_delivery, delivery_boundaries, delivery_failure_contract,
-    scratch_policy_override, scratch_cache_environment, scratch_readonly_paths, scratch_write_modes, scratch_readonly_context,
+    scratch_policy_override, scratch_cache_environment, scratch_cleanup_boundaries, scratch_readonly_paths, scratch_write_modes, scratch_readonly_context,
     delivery_execution_paths, delivery_rollback, delivery_size_and_hash)}

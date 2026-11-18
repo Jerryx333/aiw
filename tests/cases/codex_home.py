@@ -275,7 +275,9 @@ def codex_adapter_alias():
                 import tomllib
                 roots_arg = next(a for a in argv if a.startswith('sandbox_workspace_write.writable_roots='))
                 check(tomllib.loads(roots_arg)['sandbox_workspace_write']['writable_roots'] ==
-                      worker.worktree_writable_roots(str(linked)) + [str(Path(record['run_dir']) / 'scratch')], '别名 worktree roots 错误')
+                      worker.worktree_writable_roots(str(linked)) + [str(Path(record['run_dir']) / 'scratch'),
+                                                                  str((root / 'state/cache/go-build').resolve())],
+                      '别名 worktree roots 错误')
                 check(('sandbox_workspace_write.network_access=true' in argv) == ('--no-net' not in flags),
                       '别名 net 覆盖错误')
                 check(('已开放网络' in task) == ('--no-net' not in flags), '别名网络提醒错误')
