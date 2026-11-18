@@ -26,6 +26,7 @@ import slot
 
 
 CASE_MODULES = (
+    "delivery",
     "roles",
     "agent_forward",
     "forward",

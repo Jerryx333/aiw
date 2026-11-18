@@ -193,7 +193,8 @@ def background_codex_no_net():
         check(r.returncode == 0, r.stdout + r.stderr)
         data = finished(t, job_id(r.stdout))
         check(data["state"] == "succeeded", str(data))
-        check('sandbox_workspace_write.network_access=' not in args.read_text(), args.read_text())
+        check('sandbox_workspace_write.network_access=false' in args.read_text() and
+              'sandbox_workspace_write.network_access=true' not in args.read_text(), args.read_text())
         row = json.loads((t / 'state/seat-ledger.jsonl').read_text().splitlines()[-1])
         task = (Path(row['run_dir']) / 'task.txt').read_text()
         check('本单不能联网、不能监听本地端口（--no-net）' in task, task)

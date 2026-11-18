@@ -5,7 +5,7 @@
     kind=cli        直接调用命令行（codex），可以写文件。
 
 用法：
-    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net | --no-net] [--no-fallback] [--chain seat-a,seat-b] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
+    aiw <seat> <workdir> <timeout_s> <prompt_file|-> [--ro] [--text] [--worktree] [--net | --no-net] [--deliver 目标绝对目录] [--no-fallback] [--chain seat-a,seat-b] [--no-findings] [--attach 文件 ...] [--verify 命令 ...] [--verify-timeout 秒] [--effort low|medium|high]
         --worktree 只用于写任务：从当前 HEAD 创建 aiw/<run-id> 和 state/worktrees/<run-id>；macOS 上写时复制带上全部被忽略的文件（.env、node_modules 等）；结束后报告；无改动即时清理，已合并或过期 worktree 自动扫描清理。
         prompt_file 写 - 时从标准输入读 prompt，不用先建临时文件。
         --text 隐含 --ro；workspace 座位禁用工具；draft 自动启用。
@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import findings
 import structured
+from delivery import deliver_files, validate_target
 from gitenv import repository_git_env
 import slot
 
@@ -266,9 +267,12 @@ def dispatch_chain(seat, flags, explicit=None):
     return chain[0], role, chain
 
 
-def child_env() -> dict:
+def child_env(scratch=None) -> dict:
     # 外包出去的 claude -p / codex exec 也会触发各自的派单钩子；标记嵌套，钩子见到就不再派单（防套娃）
-    return dict(os.environ, AIW_NESTED="1")
+    env = dict(os.environ, AIW_NESTED="1")
+    if scratch is not None:
+        env.update(AIW_SCRATCH=str(scratch), TMPDIR=str(scratch))
+    return env
 
 
 def toml_value(value) -> str:
@@ -2012,7 +2016,7 @@ def contract_observation(workdir, seat, message, expected, run_dir=None):
         pass
 
 
-def run_agent_use(seat: str, prompt: str, workdir: str, timeout: int, fixed_model: str | None = None, baseline_status: bytes | None = None, ro: bool = True, text: bool = False) -> dict:
+def run_agent_use(seat: str, prompt: str, workdir: str, timeout: int, fixed_model: str | None = None, baseline_status: bytes | None = None, ro: bool = True, text: bool = False, run_dir: Path | None = None) -> dict:
     cfg = dict(SEATS["seats"][seat])
     if cfg.get("disabled_by_user"):
         return {"rc": 1, "out": "", "err": f"{seat} 已被用户停用：{cfg['disabled_by_user']}", "kind": "skipped_disabled", "secs": 0}
@@ -2028,15 +2032,14 @@ def run_agent_use(seat: str, prompt: str, workdir: str, timeout: int, fixed_mode
     script = agent_use_home() / "scripts" / "run_agent.py"
     if not script.exists():
         return {"rc": 127, "out": "", "err": f"agent-use 入口不存在：{script}（可设 AGENT_USE_HOME）", "kind": "not_installed", "secs": 0}
-    run_dir = new_run_dir(seat)
+    run_dir = run_dir or new_run_dir(seat)
     save_baseline(run_dir, baseline_status)
-    # agent-use 必须从文件读 prompt；归档不可写时用临时目录维持调用。
+    # agent-use 必须从文件读 prompt；归档不可写时仍只使用本单 scratch。
     with contextlib.ExitStack() as stack:
         task = run_dir / "task.txt"
         out_dir = run_dir / "result"  # 必须是新目录
         if not write_run_file(task, prompt):
-            run_dir = None
-            temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="ai-worker-")))
+            temporary = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="ai-worker-", dir=run_dir / 'scratch')))
             task, out_dir = temporary / "task.txt", temporary / "result"
             task.write_text(prompt, encoding="utf-8")
         result = run_agent_use_files(cfg, script, task, out_dir, run_dir, workdir, timeout, ro=ro or cfg.get("ro_only", False), text=text)
@@ -2091,7 +2094,8 @@ def run_agent_use_files(cfg, script, task, out_dir, run_dir, workdir, timeout, r
     outer_timeout = False
     try:
         # 给 agent-use 自己的超时控制留余量（它会清理供应商进程组），外层只兜底
-        p = run_group(argv, timeout + 30, cwd=workdir, stdin=subprocess.DEVNULL, env=child_env())
+        p = run_group(argv, timeout + 30, cwd=workdir, stdin=subprocess.DEVNULL,
+                      env=child_env(run_dir / 'scratch' if run_dir else None))
     except RunInterrupted as e:
         e.result.update(run_dir=str(run_dir) if run_dir is not None else None)
         raise
@@ -2224,9 +2228,7 @@ def build_argv(seat: str, prompt: str, workdir: str, ro: bool, effort: str | Non
         # Codex 内层 shell 不继承 AIW_NESTED，需显式设置执行方 shell 环境。
         argv[2:2] = ["-c", 'shell_environment_policy.set.AIW_NESTED="1"']
         if codex_workspace_write(seat, ro):
-            overrides = []
-            if net:
-                overrides += ["-c", "sandbox_workspace_write.network_access=true"]
+            overrides = ["-c", "sandbox_workspace_write.network_access=" + toml_value(net)]
             roots = worktree_writable_roots(workdir)
             if roots:
                 overrides += ["-c", "sandbox_workspace_write.writable_roots=" + toml_value(roots)]
@@ -2248,6 +2250,45 @@ def build_argv(seat: str, prompt: str, workdir: str, ro: bool, effort: str | Non
                 kept.append(arg)
             model_args = kept
         argv[pos:pos] = [a.format(model=cfg["model"], effort=selected_effort) for a in model_args]
+    return argv
+
+
+def scratch_argv(seat, argv, scratch, workdir, ro, net, prompt):
+    """保留只读沙箱和仓库 cwd；只给 workspace-write 写单增加 scratch。"""
+    if seat_adapter(seat) != 'codex' or argv[1:2] != ['exec']:
+        return argv
+    if ro:
+        violation = readonly_argv_error(seat, argv, prompt)
+        if violation:
+            raise ValueError(violation)
+    elif (argv.count('--sandbox') != 1
+          or argv[argv.index('--sandbox') + 1:argv.index('--sandbox') + 2] != ['workspace-write']
+          or any(a in ('-s', '--full-auto', '--dangerously-bypass-approvals-and-sandbox')
+                 or a.startswith('--sandbox=') for a in argv if a != prompt)):
+        return argv
+    argv = list(argv)
+    roots = [] if ro else [*worktree_writable_roots(workdir), str(scratch)]
+    settings = {
+        'sandbox_workspace_write.writable_roots': roots,
+        'sandbox_workspace_write.network_access': net and not ro,
+        'shell_environment_policy.set.AIW_SCRATCH': str(scratch),
+        'shell_environment_policy.set.TMPDIR': str(scratch),
+    }
+    if ro:
+        settings.update({'sandbox_workspace_write.exclude_tmpdir_env_var': True,
+                         'sandbox_workspace_write.exclude_slash_tmp': True})
+    kept, i = [], 0
+    while i < len(argv):
+        if (argv[i] in ('-c', '--config') and i + 1 < len(argv)
+                and argv[i + 1].split('=', 1)[0].strip() in {*settings, 'sandbox_workspace_write'}):
+            i += 2
+        else:
+            kept.append(argv[i])
+            i += 1
+    argv = kept
+    # 在已有配置之后覆盖；不能把参数插入 -- 后面的 prompt 数据。
+    position = argv.index('--') if '--' in argv else len(argv) - int(argv[-1] == prompt)
+    argv[position:position] = [item for key, value in settings.items() for item in ('-c', key + '=' + toml_value(value))]
     return argv
 
 
@@ -2276,18 +2317,57 @@ def preflight(cfg: dict) -> dict | None:
     return {"kind": "locked", "rc": 1, "out": "", "err": err, "secs": round(time.time() - t0, 1)}
 
 
-def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = True, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False) -> dict:
+def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effort: str | None = None, fixed_model: str | None = None, net: bool = True, baseline_status: bytes | None = None, run_dir: Path | None = None, text: bool = False, deliver: str | None = None) -> dict:
     global PENDING_SIGNAL
     mode = effective_mode(None, SEATS['seats'][seat], ({'--ro'} if ro else set()) | ({'--text'} if text else set()))
     ro, text = mode != 'rw', text or mode == 'text'
+    run_dir = (run_dir or new_run_dir(seat)).resolve()
+    scratch = run_dir / 'scratch'
+    codex = seat_adapter(seat) == 'codex'
+    capabilities = {'scratch_writable': False, 'network': None, 'deliver': False}
+    try:
+        scratch.mkdir(parents=True, mode=0o700, exist_ok=False)
+    except OSError as error:
+        return dict(rc=1, out='', err=f'scratch 创建失败：{error}', kind='scratch', secs=0,
+                    run_dir=str(run_dir), capabilities=capabilities)
+    scratch_writable = codex and not ro and codex_workspace_write(seat, ro)
+    capabilities.update(scratch_writable=scratch_writable,
+                        network=False if codex and ro else net if scratch_writable else None,
+                        deliver=bool(deliver and scratch_writable))
+    if deliver and not scratch_writable:
+        return dict(rc=1, out='', err='当前适配器不支持可写 scratch，无法 --deliver；未额外扩权',
+                    kind='delivery', secs=0, run_dir=str(run_dir), capabilities=capabilities)
+    if not net and not (scratch_writable or codex and ro):
+        return dict(rc=64, out='', err='当前适配器无法保证 --no-net，拒绝执行', kind='network',
+                    secs=0, run_dir=str(run_dir), capabilities=capabilities)
+    notice = f'\n\n本单原工作目录：{workdir}。AIW_SCRATCH={scratch}，TMPDIR 指向同一目录。'
+    if scratch_writable:
+        notice += 'scratch 可写并保留供验收。'
+    elif codex and ro:
+        notice += '只读任务保留原 read-only 沙箱和仓库工作目录；scratch_writable=false，scratch 未开放写权限。'
+    else:
+        notice += '当前适配器不支持单独放开 scratch 写权限，scratch_writable=false，未额外扩权。'
+    if deliver:
+        notice += '\n成果交付约定：把所有交付文件写入 $AIW_SCRATCH/deliver/，由 aiw 在成功后复制到目标；不要自行写目标目录。'
+    suffix = min((prompt.index(marker) for marker in ('\n\n' + findings.SUFFIX, PANEL_FORMAT)
+                  if marker in prompt), default=len(prompt))
+    prompt = prompt[:suffix] + notice + prompt[suffix:]
     t0 = time.time()
-    context = {"out": "", "err": "", "archived": False, "output_saved": False}
+    context = {"out": "", "err": "", "archived": False, "output_saved": False,
+               'capabilities': capabilities}
     try:
         with deferred_signals():
             result = _run_seat(seat, prompt, workdir, timeout, ro, effort, fixed_model, net, baseline_status, text=text,
                                **({"run_dir": run_dir} if run_dir is not None else {}))
             context.update(result)
             context["archived"] = True
+            result.setdefault('run_dir', str(run_dir))
+            if result.get('kind') in ('not_installed', 'invalid_argv', 'locked', 'account'):
+                capabilities.update(scratch_writable=False, network=None, deliver=False)
+            result['capabilities'] = capabilities
+            write_run_file(run_dir / 'result.json', json.dumps({k: result[k] for k in ('rc', 'kind', 'capabilities')}))
+            if not codex:
+                print('[ai-worker] 当前适配器未额外开放 scratch 写权限；network 未核实', file=sys.stderr)
         # dispatch 的记账延迟区仍在外层：在尝试边界提取信号，先记 interrupted 再退出。
         if PENDING_SIGNAL is not None:
             code, PENDING_SIGNAL = PENDING_SIGNAL, None
@@ -2306,6 +2386,7 @@ def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effor
                 context["output_saved"] = write_run_file(run_dir / "output.md", context["out"])
                 write_run_file(run_dir / "stderr.txt", context["err"], 200 * 1024)
         e.result.update(context, kind="interrupted", rc=e.code, secs=round(time.time() - t0, 1))
+        write_run_file(run_dir / 'result.json', json.dumps({k: e.result[k] for k in ('rc', 'kind', 'capabilities')}))
         raise
 
 
@@ -2314,6 +2395,9 @@ def readonly_argv_error(seat, argv, prompt=None):
     # Task text is data even when a local template places it before options.
     options = [arg for arg in argv if arg != prompt]
     if seat_adapter(seat) == "codex":
+        if (options.count('--cd') > 1 or any(
+                a == '-C' or a.startswith(('-C', '--cd=', '--add-dir')) for a in options)):
+            return '只读任务禁止覆盖工作目录或添加写根（-C/--cd=/重复 --cd/--add-dir）'
         if (options.count("--sandbox") != 1 or
                 options[options.index("--sandbox") + 1:options.index("--sandbox") + 2] != ["read-only"]):
             return "只读任务要求 Codex --sandbox read-only"
@@ -2342,7 +2426,7 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
     if SEATS["seats"][seat].get("kind") == "agent_use":
         if not ro and text_only_seat(seat):
             return {"rc": 64, "out": "", "err": "文本座位不能改文件", "kind": "invalid_argv", "secs": 0}
-        return run_agent_use(seat, prompt, workdir, timeout, fixed_model, baseline_status, ro=ro, text=text)
+        return run_agent_use(seat, prompt, workdir, timeout, fixed_model, baseline_status, ro=ro, text=text, run_dir=run_dir)
     if SEATS["seats"][seat].get("account") is not None:
         # 账号问题先报，不让它变成 not_installed 熔断后顶替
         reason = account_unready(seat)
@@ -2359,10 +2443,12 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
     violation = readonly_argv_error(seat, argv, prompt) if ro else None
     if violation:
         return {"rc": 64, "out": "", "err": violation, "kind": "invalid_argv", "secs": 0}
+    if run_dir is not None:
+        argv = scratch_argv(seat, argv, run_dir.resolve() / 'scratch', workdir, ro, net, prompt)
     locked = preflight(SEATS["seats"][seat])
     if locked:
         return locked
-    env = child_env()
+    env = child_env(run_dir.resolve() / 'scratch' if run_dir else None)
     if SEATS["seats"][seat].get("account") is not None:
         reason = apply_account(seat, argv, env)
         if reason:
@@ -2376,8 +2462,7 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
             print(f"[ai-worker] 执行方独立 CODEX_HOME 不可用，回退共享配置：{reason}", file=sys.stderr)
     run_dir = run_dir or new_run_dir(seat)
     save_baseline(run_dir, baseline_status)
-    if not write_run_file(run_dir / "task.txt", prompt):
-        run_dir = None
+    write_run_file(run_dir / "task.txt", prompt)
     t0 = time.time()
     timed_out = False
     try:
@@ -2589,6 +2674,17 @@ def split_argv(argv: list[str], allowed: set[str], *, values: dict | None = None
             if v is None or not all(re.fullmatch(r"[A-Za-z0-9][\w.-]*", name, re.ASCII) for name in v.split(',')):
                 raise AttachError("--chain 应为逗号分隔的非空座位名（字母或数字开头，仅字母、数字、点、下划线、连字符）")
             values["chain"] = v.split(',')
+        elif a == "--deliver":
+            if 'deliver' in values:
+                raise AttachError('--deliver 只能出现一次')
+            value = next(it, None)
+            if value is None or value.startswith('--'):
+                raise AttachError('--deliver 后面缺目标绝对目录')
+            try:
+                validate_target(value)
+            except (ValueError, OSError, RuntimeError) as error:
+                raise AttachError(str(error)) from error
+            values['deliver'] = value
         elif a == "--prior":
             if "prior" in values:
                 raise AttachError("--prior 只能出现一次")
@@ -2800,6 +2896,10 @@ def main() -> int:
         except OSError as e:
             if publish:
                 print(f"[ai-worker] 警告：删除 inflight 锁失败：{e}", file=sys.stderr)
+        if 'capabilities' in attempt:
+            print('[ai-worker] capabilities: ' + json.dumps(attempt['capabilities'], ensure_ascii=False), file=sys.stderr)
+        if 'delivery' in attempt:
+            print('[ai-worker] delivery: ' + json.dumps(attempt['delivery'], ensure_ascii=False), file=sys.stderr)
         if attempt.get("run_dir"):
             saved = rc == 0 and attempt.get("output_saved", False)
             label = "全文" if saved else "排查"
@@ -2807,6 +2907,8 @@ def main() -> int:
             if rc == 0 and not saved:
                 path += "（output.md 没写成功，全文只在上面的输出里）"
             print(f"[ai-worker] {label}：{path}", file=sys.stderr)
+        if attempt.get('kind') == 'invalid_argv':
+            print('[ai-worker] 拒绝执行：' + attempt.get('err', ''), file=sys.stderr)
         if liveness_lock is not None:
             liveness_lock.close()
 
@@ -2881,6 +2983,9 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     wire_no_fallback = named
     if any(SEATS['seats'].get(name, {}).get('local_only') for name in wire_chain):
         return None
+    if values.get('deliver'):
+        print('[ai-worker] --deliver 暂不支持转发执行，拒绝跨机器交付', file=sys.stderr)
+        return 64
     if 'agent-runtime-v1' in SEATS.get('capabilities', []):
         from agent_forward import describe, PROTOCOL
         # Nothing has been queued yet: a forwarder that cannot check identities, or an
@@ -2943,6 +3048,8 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     prompt_id = hashlib.sha1((prompt + render_attachments(files)).encode()).hexdigest()[:10]
     run_dir = new_run_dir(re.sub(r'[^\w.-]', '_', seat))
     run_dir.mkdir(parents=True, exist_ok=True)
+    scratch = run_dir.resolve() / 'scratch'
+    scratch.mkdir(mode=0o700)
     if via != 'direct':
         flags.add('--no-findings')
     panel_format = via == 'panel' and os.environ.get('AIW_PANEL_FORMAT') == '1'
@@ -2965,7 +3072,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
         argv += ['--attach', str(Path(workdir) / name)]
     write_run_file(run_dir / 'task.txt', auto_prompt_prefix(dt.datetime.now().astimezone()) + prompt + render_attachments(files))
     env = dict(os.environ, AIW_NO_FORWARD='1', AIW_FORWARD_MODE='text' if text else 'ro' if ro else 'write',
-               AIW_FORWARD_RUN_DIR=str(run_dir))
+               AIW_FORWARD_RUN_DIR=str(run_dir), AIW_SCRATCH=str(scratch), TMPDIR=str(scratch))
     env.pop('AIW_FORWARD_AGENT_DESC', None)
     if agent_description:
         description_path = run_dir / 'agent-description.json'
@@ -3044,6 +3151,13 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     attempt.update(run_dir=str(run_dir), output_saved=(run_dir / 'output.md').exists(), executed=True)
     metadata = load_json(run_dir / 'forward.json', {}, strict=False)
     metadata = metadata if isinstance(metadata, dict) else {}
+    capabilities = metadata.get('capabilities')
+    if (not isinstance(capabilities, dict) or set(capabilities) != {'scratch_writable', 'network', 'deliver'}
+            or any(type(capabilities.get(key)) is not bool for key in ('scratch_writable', 'deliver'))
+            or capabilities.get('network') is not None and type(capabilities['network']) is not bool):
+        capabilities = dict(scratch_writable=False, network=None, deliver=False)
+        print('[ai-worker] 转发执行未回报能力；scratch 写权限未核实，未额外开放', file=sys.stderr)
+    attempt['capabilities'] = capabilities
     actual = metadata.get('actual') if isinstance(metadata.get('actual'), str) else seat
     if agent_description and rc == 0 and (metadata.get('actual') not in chain or not metadata.get('remote_actual')):
         print('[ai-worker] Agent 转发回报身份不一致', file=sys.stderr)
@@ -3079,6 +3193,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     except Exception:
         pass
     ledger({'executor': 'forward', 'forward_host': host, 'seat': seat, 'actual': actual,
+            'capabilities': capabilities,
             'role': role, 'task_class': 'draft' if text else 'review' if ro else 'write',
             **({'text': True} if text else {}), **verify_fields,
             'repo': repo, 'workdir': workdir if repo is None else None, 'via': call_via(),
@@ -3087,6 +3202,7 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
             'rc': rc, 'secs': round(time.monotonic() - started, 1), 'substituted': False, 'err_tail': '',
             **({'tokens': usage} if usage is not None else {}),
             **({'effort': values['effort']} if values.get('effort') else {})})
+    save_json(run_dir / 'result.json', dict(rc=rc, kind=kind, capabilities=capabilities))
     if interruption is not None:
         raise interruption
     return rc
@@ -3124,7 +3240,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
         return 0
     try:
         values = {}
-        args, flags, attach = split_argv(sys.argv[1:], {"--ro", "--text", "--worktree", "--net", "--no-net", "--no-fallback", "--chain", "--no-findings", "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}, values=values)
+        args, flags, attach = split_argv(sys.argv[1:], {"--ro", "--text", "--worktree", "--net", "--no-net", "--deliver", "--no-fallback", "--chain", "--no-findings", "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}, values=values)
         effort = values.get("effort")
     except AttachError as e:
         print(f"[ai-worker] {e}", file=sys.stderr)
@@ -3268,8 +3384,11 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     network_flag = "--no-net" if "--no-net" in flags else "--net" if "--net" in flags else None
     net = "--no-net" not in flags
     if network_flag and not text and agent_use_workspace(seat_cfg):
+        if not net:
+            print('[ai-worker] 当前适配器无法保证 --no-net，拒绝执行', file=sys.stderr)
+            return 64
         print(f"[ai-worker] {seat}：workspace 座位联网由供应商决定，{network_flag} 不生效", file=sys.stderr)
-    elif network_flag and (ro or (seat_cfg and (seat_adapter(seat) != "codex" or seat_cfg.get("kind") == "agent_use"
+    elif network_flag and not (not net and ro and seat_adapter(seat) == 'codex') and (ro or (seat_cfg and (seat_adapter(seat) != "codex" or seat_cfg.get("kind") == "agent_use"
                                    or not codex_workspace_write(seat, ro)))):
         print(f"[ai-worker] {network_flag} 只用于 codex 类座位的写单，不能与 --ro 或只读座位同用，也不能用于非 codex 座位", file=sys.stderr)
         return 64
@@ -3428,7 +3547,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             kind = "cli" if agent_use_workspace(cfg) and not actual_text else cfg.get("kind")
                             if network_flag and s != seat and not codex_workspace_write(s, actual_ro):
                                 reason = "workspace 座位联网由供应商决定" if agent_use_workspace(cfg) else "本座位不是 Codex workspace-write 写单"
-                                print(f"[ai-worker] {s}：{reason}，{network_flag} 不生效", file=sys.stderr)
+                                print(f"[ai-worker] {s}：{reason}，" + ('无法保证 --no-net，将拒绝执行' if not net else f'{network_flag} 不生效'), file=sys.stderr)
                             if kind != "cli" and not attachments_warned:
                                 warn_large_attachments(attachment_files)
                                 attachments_warned = True
@@ -3440,6 +3559,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             attempt["executed"] = True
                             r = run_seat(s, task_prompt, workdir, timeout, actual_ro, effort_fields.get("effort"), None, net,
                                          changes.baseline_status, **({"text": True} if actual_text else {}),
+                                         **({'deliver': values['deliver']} if values.get('deliver') else {}),
                                          **({"run_dir": task_run_dir if s == seat else new_run_dir(s)} if task_run_dir is not None else {}))
                         except RunInterrupted as e:
                             interruption, r = e, e.result
@@ -3501,9 +3621,30 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             finish_substitute(token, success)
                     if not ro and r['kind'] == 'ok' and r.get('run_dir'):
                         changes.save_evidence(r['run_dir'], source_root if worktree_fields else None)
+                    if values.get('deliver'):
+                        checked = verify_fields.get('verify')
+                        if r['kind'] == 'ok' and r['rc'] == 0 and (not checked or checked['passed'] == checked['total']):
+                            delivery = deliver_files(Path(r['run_dir']) / 'scratch', values['deliver'])
+                        else:
+                            delivery = dict(target=values['deliver'], delivered=[], error='执行或验收未成功，未交付')
+                        r['delivery'] = delivery
+                        if delivery['error'] and r['kind'] == 'ok':
+                            r.update(kind='delivery', rc=1, err=r['err'] + '\n交付失败：' + delivery['error'])
+                        attempt.update(r)
+                        if r.get('run_dir') and Path(r['run_dir']).is_dir():
+                            directory = Path(r['run_dir'])
+                            evidence = load_json(directory / 'changes.json', {}, strict=False)
+                            if not isinstance(evidence, dict):
+                                evidence = {}
+                            evidence['delivery'] = delivery
+                            save_json(directory / 'changes.json', evidence)
+                            save_json(directory / 'result.json', {key: r[key] for key in ('rc', 'kind', 'capabilities', 'delivery')})
+                            output = r['out'] + '\n\n[aiw delivery] ' + json.dumps(delivery, ensure_ascii=False) + '\n'
+                            write_run_file(directory / 'output.md', output)
                     token_fields = run_tokens(s, r)
                     ledger({**actual_fields, **repo_fields, **change_fields, **verify_fields, **({"agent_use_versions": r["agent_use_versions"]} if "agent_use_versions" in r else {}), **({"findings_n": len(parsed["observations"])} if parsed is not None else {}), **declared_fields(raw_output if r["kind"] in ("ok", "format") else None), "via": via, **effort_fields, "seat": seat, "actual": s, "prompt": prompt_id, "ro": actual_ro, "model": r.get("model") or SEATS["seats"][s].get("model") or "default",
                             "run_dir": r.get("run_dir"),
+                            **{key: r[key] for key in ('capabilities', 'delivery') if key in r},
                             "kind": r["kind"], "rc": r["rc"], "secs": r["secs"], "substituted": s != seat,
                             "err_tail": r["err"][-300:],
                             **({"forward_refused": forward_refused} if forward_refused else {}),

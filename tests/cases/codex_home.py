@@ -268,14 +268,14 @@ def codex_adapter_alias():
             check((root / 'home').read_text().strip() == (str((root / 'state/codex-home').resolve()) if adapted else str(source)),
                   f'{seat} CODEX_HOME 错误')
             write = adapted and '--ro' not in flags
-            check(any(a.startswith('sandbox_workspace_write.writable_roots=') for a in argv) == write,
+            check(any(a.startswith('sandbox_workspace_write.writable_roots=') for a in argv) == adapted,
                   f'{seat} worktree 参数错误')
             check(('本目录是 linked worktree' in task) == write, f'{seat} worktree 提醒错误')
             if write:
                 import tomllib
                 roots_arg = next(a for a in argv if a.startswith('sandbox_workspace_write.writable_roots='))
                 check(tomllib.loads(roots_arg)['sandbox_workspace_write']['writable_roots'] ==
-                      worker.worktree_writable_roots(str(linked)), '别名 worktree roots 错误')
+                      worker.worktree_writable_roots(str(linked)) + [str(Path(record['run_dir']) / 'scratch')], '别名 worktree roots 错误')
                 check(('sandbox_workspace_write.network_access=true' in argv) == ('--no-net' not in flags),
                       '别名 net 覆盖错误')
                 check(('已开放网络' in task) == ('--no-net' not in flags), '别名网络提醒错误')

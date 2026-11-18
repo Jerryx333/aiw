@@ -34,7 +34,7 @@ TYPES = ("object", "array", "string", "integer", "number", "boolean", "null")
 SCHEMA_LIMIT = 256 * 1024
 RAW_EXCERPT = 6000
 # 带值的 ai_worker 开关：拆位置参数时要跳过它们的值。
-VALUE_FLAGS = {"--attach", "--chain", "--effort", "--verify", "--verify-timeout", "--schema"}
+VALUE_FLAGS = {"--attach", "--chain", "--effort", "--verify", "--verify-timeout", "--schema", "--deliver"}
 
 
 class SchemaError(ValueError):

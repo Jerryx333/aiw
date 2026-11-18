@@ -97,12 +97,14 @@ with patch.object(w.dt, 'datetime', Fixed):
         rows = [json.loads(x) for x in (t / 'state/seat-ledger.jsonl').read_text().splitlines()][before:]
         check(len(rows) >= 2 and all(x['via'] == 'map' for x in rows), str(rows))
         tasks = [(Path(row['run_dir']) / 'task.txt').read_text() for row in rows]
-        check(len(set(tasks)) == 1 and all(x.count('今天是 ') == 1 for x in tasks), str(tasks))
+        check(len({x.split('\n\n本单原工作目录：')[0] for x in tasks}) == 1
+              and all(x.count('今天是 ') == 1 for x in tasks), str(tasks))
         before = set((t / 'state/runs').iterdir())
         r = sh([str(REPO / 'bin/aiw'), 'freecheck'], env=env)
         check(r.returncode == 0, r.stderr)
         probes = set((t / 'state/runs').iterdir()) - before
-        check(probes and all((d / 'task.txt').read_text() == 'Reply with exactly: FREECHECK_OK' for d in probes), str(probes))
+        check(probes and all((d / 'task.txt').read_text().split('\n\n本单原工作目录：')[0] ==
+                             'Reply with exactly: FREECHECK_OK' for d in probes), str(probes))
 
 
 
@@ -216,6 +218,9 @@ def gc_old_directories():
         for parent in ('runs', 'panels', 'maps'):
             for age in ('old', 'new'):
                 p = state / parent / age; p.mkdir(parents=True); (p / 'data').write_text('data')
+                if parent == 'runs':
+                    (p / 'scratch/deliver').mkdir(parents=True)
+                    (p / 'scratch/deliver/result').write_text('retained artifact')
                 if age == 'old': os.utime(p, (time.time() - 31 * 86400,) * 2)
         for name in ('seat-ledger.jsonl', 'breaker.json', 'daily-count.json', 'router-log.jsonl', '.state.lock'):
             (state / name).write_text('保留')
@@ -236,6 +241,7 @@ def gc_old_directories():
         check(r.returncode == 0 and '已删除 3 个目录' in r.stdout and '释放' in r.stdout, '删除数量错误')
         for parent in ('runs', 'panels', 'maps'):
             check(not (state / parent / 'old').exists() and (state / parent / 'new').exists(), '误删新目录')
+        check((state / 'runs/new/scratch/deliver/result').read_text() == 'retained artifact', '误删新 scratch')
         check((outside / 'data').read_text() == '保留' and (state / 'runs/file').exists(), '误删目录外文件')
         check(all(p.read_text() == '保留' for p in state.iterdir() if p.is_file()), '误删账本或锁')
         check('已删除 0 个目录' in sh(cmd + ['30'], env=env).stdout, '重复运行不幂等')

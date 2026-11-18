@@ -2,6 +2,7 @@
 from support import Path, REPO, check, json, os, sys, tempfile, worker_call, inprocess_sh as sh
 from support import write_legacy_local
 from unittest.mock import patch
+from cases.delivery import scratch_readonly
 
 
 def role_resolve_matrix():
@@ -86,7 +87,7 @@ def role_review_forces_ro():
         cmd[2] = 'review'; cmd.remove('--ro')
         r = sh(cmd + ['--no-findings'], env=env)
         check(r.returncode == 0 and '角色 review → 座位 codex-sol' in r.stderr, r.stderr)
-        check('read-only' in marker.read_text(), marker.read_text())
+        check(scratch_readonly(marker.read_text().splitlines()), marker.read_text())
         cli = t / 'replacement-cli'
         cli.write_text('#!' + sys.executable + '\nimport json,sys\n'
                        'if any("effort=\\\"low\\\"" in a for a in sys.argv):\n'
@@ -97,7 +98,7 @@ def role_review_forces_ro():
         local.write_text(json.dumps({'fallback': {'codex-sol': ['codex']}}))
         env.update(AIW_CONFIG=str(local), CODEX_BIN=str(cli), AIW_STATE=str(t / 'fallback-state'))
         r = sh(cmd + ['--no-findings'], env=env)
-        check(r.returncode == 0 and 'read-only' in json.loads(r.stdout), r.stdout+r.stderr)
+        check(r.returncode == 0 and scratch_readonly(json.loads(r.stdout)), r.stdout+r.stderr)
         rows = [json.loads(line) for line in (t/'fallback-state/seat-ledger.jsonl').read_text().splitlines()]
         check(rows[-1]['actual'] == 'codex' and rows[-1]['ro'] is True, rows)
         check(all(row['role'] == 'review' and row['task_class'] == 'review' for row in rows), rows)
@@ -345,18 +346,18 @@ def explicit_chain_keeps_readonly_ceiling():
         cmd, env, _ = worker_call(t, AIW_MAIN='claude', FAKE_CODEX_ARGS=str(marker))
         cmd[2] = 'codex-sol'; cmd.remove('--ro')
         r = sh(cmd + ['--chain', 'codex-sol', '--no-findings'], env=env)
-        check(r.returncode == 0 and marker.exists() and 'read-only' in marker.read_text(), r.stdout + r.stderr)
+        check(r.returncode == 0 and marker.exists() and scratch_readonly(marker.read_text().splitlines()), r.stdout + r.stderr)
 
 
 def generated_force_mode_never_widens():
     import ai_worker as w
     from unittest.mock import patch
     row = dict(w.SEATS['seats']['codex'], force_mode='ro')
-    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.object(w, '_run_seat', return_value={'rc': 0}) as run:
+    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.object(w, '_run_seat', return_value={'rc': 0, 'kind': 'ok'}) as run:
         w.run_seat('generated', 'test', str(REPO), 10, False)
         check(run.call_args.args[4] is True, str(run.call_args))
     row['force_mode'] = 'text'
-    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.object(w, '_run_seat', return_value={'rc': 0}) as run:
+    with patch.dict(w.SEATS['seats'], {'generated': row}), patch.object(w, '_run_seat', return_value={'rc': 0, 'kind': 'ok'}) as run:
         w.run_seat('generated', 'test', str(REPO), 10, False)
         check(run.call_args.args[4] is True and run.call_args.kwargs['text'] is True, str(run.call_args))
 

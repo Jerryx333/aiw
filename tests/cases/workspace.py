@@ -46,6 +46,9 @@ def workspace_access_ro_rw():
                 cmd[2] = role
                 flags = ['--ro'] if readonly and role == 'workspace' else []
                 r = sh(cmd[:-1] + flags + [network_flag, '--attach', 'code.txt', '--no-findings'], env=env)
+                if network_flag == '--no-net':
+                    check(r.returncode == 64 and '无法保证 --no-net' in r.stderr, r.stderr)
+                    continue
                 check(r.returncode == 0 and f'{network_flag} 不生效' in r.stderr, r.stderr)
                 run_dir = sorted((t / 'state/runs').iterdir(), key=lambda p: p.stat().st_mtime_ns)[-1]
                 prompt = (run_dir / 'task.txt').read_text()
@@ -117,7 +120,8 @@ def workspace_explicit_text():
         check(r.returncode == 0 and not calls(t)[-1]['no_tools'], r.stderr)
         cmd[2] = 'codex'; marker = t / 'cli-argv'; env['FAKE_CODEX_ARGS'] = str(marker)
         r = sh(cmd + ['--text'], env=env)
-        check(r.returncode == 0 and 'read-only' in marker.read_text()
+        from cases.delivery import scratch_readonly
+        check(r.returncode == 0 and scratch_readonly(marker.read_text().splitlines())
               and '--require-no-tools' not in marker.read_text(), r.stderr)
 
 
@@ -129,7 +133,10 @@ def workspace_text_net_conflict():
                                 ('text', ['--text']), ('codex', ['--text'])]:
                 cmd[2] = seat
                 r = sh(cmd + flags + [network_flag], env=env)
-                check(r.returncode == 64 and '不能与 --ro' in r.stderr, r.stderr)
+                if seat == 'codex' and network_flag == '--no-net':
+                    check(r.returncode == 0, r.stderr)
+                else:
+                    check(r.returncode == 64 and '不能与 --ro' in r.stderr, r.stderr)
         check(not (t / 'calls').exists(), 'conflicting dispatch executed')
 
 

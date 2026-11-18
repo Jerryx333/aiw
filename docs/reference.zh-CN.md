@@ -388,7 +388,7 @@ Claude 派单钩子检查也识别已启用的 `aiw@…` 插件提供的 `UserPr
 
 会诊后填写目录中的 `adjudication.md`：每条关键意见标接受/驳回（理由或证据）/暂缓（写明等什么），不以多数票收敛。未提供 `--prior` 仅提醒，不改变退出码；文件读不到返回 64。
 
-worker 只接受 `--ro --text --worktree --net --no-net --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`（入口另认 `--background --no-notify`，见下节），panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
+worker 只接受 `--ro --text --worktree --net --no-net --deliver --no-fallback --chain --no-findings --allow-nested --attach --effort --verify --verify-timeout`（入口另认 `--background --no-notify`，见下节），panel 只接受 `--attach`、`--prior`、`--free`、`--full`；未知开关返回 64，旧 `--require-no-tools` 提示「已移除，忽略」后继续。
 
 `aiw write . 1200 task.txt --worktree`（点名写座位也可用）：只用于写任务，与 `--ro`、review/draft 或只读座位同用返回 64；workdir 必须在有 HEAD 提交的 Git 仓库内。
 从当前 HEAD 创建 `aiw/<run-id>` 分支及 `<STATE>/worktrees/<run-id>`（同名分支返回 64，不覆盖）；子目录映射到同一相对路径，写锁、顶替链、提示词、沙箱与改动统计均使用新目录。未提交改动不会带入，stderr 最多列 10 个文件。macOS 上建好后把源仓库里所有被 Git 忽略的文件和目录（`.env`、`node_modules`、构建缓存等，软链按软链本身）用 clonefile 写时复制到 worktree 同一位置，不用重装依赖、不占额外空间、改动不影响源目录；含 git worktree 的目录（如 aiw 自己的 `<STATE>`）不复制。复制失败（如跨盘）只提示，不影响派单。带 `--attach` 时先在原 workdir 按全部附件规则预检；附件未跟踪、已修改或已暂存（相对 HEAD 有任何差异）返回 64，提示先提交或去掉 `--worktree`，不创建 worktree、分支或元数据；通过后在 worktree 读取对应已提交文件。
@@ -401,9 +401,13 @@ worker 只接受 `--ro --text --worktree --net --no-net --no-fallback --chain --
 
 验收在实际工作目录运行；带 `--worktree` 时为任务 worktree 中对应子目录，在 worktree 汇报和无改动清理之前运行。验收产生的未跟踪文件计为改动，因此会保留 worktree。stdout 在执行方正文之后追加精简「aiw 验收（主会话环境执行）」结果块：逐条 rc、耗时、最多 120 字符的命令，失败输出最后 40 行（单条最多 1500 字符），通过数与全文路径；完整命令、rc、耗时及输出归档到成功尝试的 `<run_dir>/verify.txt`。成功尝试账本行增加 `verify: {"total": N, "passed": M, "secs": 秒}`；跳过时记录 `{"total": N, "passed": null, "skipped": true}`。未带 `--verify` 时账本不增加字段，旧行为不变。
 
-`adapter="codex"` 且使用 `workspace-write` 沙箱的写单默认在 prompt 前添加 `-c sandbox_workspace_write.network_access=true`，开放网络和本地端口。`--no-net` 按单关闭：不添加该网络 override，使用隔离 CODEX_HOME 的沙箱默认网络限制（若主动启用共享 home、隔离 home 初始化失败回退共享配置，或座位自带网络配置，则仍取决于该配置，不强制写入 false）；旧 `--net` 继续接受，等同默认。两者同用返回 64；任一开关与 `--ro`（含只读座位、`--text`、写配置为 `read-only` 的座位）同用或用于非 Codex 座位返回 64 并说明，供应商 workspace 座位除外（提示后忽略）。顶替时按实际执行座位应用：Codex 写单沿用本单网络选择，不适用的座位提示后忽略显式开关。claude-write 的网络沙箱限制保持原样；其他写座位能否联网由各自沙箱决定。
+`adapter="codex"` 的 `workspace-write` 写单默认设置 `sandbox_workspace_write.network_access=true`；`--no-net` 强制设置 false，避免共享配置放开网络。只读/文本单始终 false，也接受 `--no-net`；`--net` 仍只用于写单，两者同用返回 64。无法保证禁网的适配器（包括顶替座位）遇到 `--no-net` 拒绝执行，不再忽略。未指定禁网的其它适配器保持自身网络策略，能力字段 `network=null` 表示未核实。
 
-`adapter="codex"` 写单在 linked worktree 中自动添加 `-c sandbox_workspace_write.writable_roots=[...]`（TOML 字符串数组）。通过 `git rev-parse --git-dir` 与 `--git-common-dir` 探测，要求 git-dir 的 realpath 位于 `<common-dir>/worktrees/` 下，且 git-dir 和 objects 本身不是软链；只包含 worktree 私有 git-dir 和 `<common-dir>/objects` 的 realpath，供 `git add` 写索引及对象；不开放整个共享 `.git`，hooks/config/refs 保持不可写。普通仓库、Git 探测失败或只读单不添加。`git commit` 及其它改 refs 的操作会被沙箱拒绝，执行方不要尝试，改动留在暂存区，由主会话提交。
+每次执行创建 `<run_dir>/scratch/`，传入 `AIW_SCRATCH` 和 `TMPDIR`，保留到 gc 清理运行目录。仅 Codex workspace-write 写单增加 scratch 可写根；linked worktree 另含私有 git-dir 和共享 objects（不开放 hooks/config/refs）。写单保留原 `/tmp` 权限；非 workspace-write 写单不改沙箱、argv 或 cwd，`--no-net` 在入口返回 64。只读/文本单保留原 read-only 沙箱及仓库 cwd，拒绝 `-C`、`--cd=`、重复 `--cd`、`--add-dir`；不额外开放 scratch，能力和提示明确 `scratch_writable=false`，带 `--deliver` 拒绝执行。只读单设置排除系统临时目录的配置。其它适配器不额外扩权并报告不支持。
+
+2026-11-18 核对本机 Codex CLI 0.166.0 帮助及[官方配置参考](https://learn.chatgpt.com/docs/config-file/config-reference)：现有 `sandbox_workspace_write.writable_roots` 只适用于 workspace-write。官方另有 beta permissions 配置，但与现有 sandbox 配置不能混用，本适配器未核实其兼容性，因此只读单采用上述保守行为。
+
+`--deliver "$HOME/Downloads/results"` 要求执行方把成果放入 `$AIW_SCRATCH/deliver/`，执行和验收成功后由 aiw 复制并逐文件核对 SHA-256。同内容可重复交付；不同内容拒绝覆盖。只支持 home 内非私密目录，拒绝软链、硬链及特殊文件；转发执行暂不支持。实际能力写入 `result.json`、账本和最终摘要的 `capabilities`（`scratch_writable`、`network`、`deliver`）；交付文件及失败原因写入 `delivery`、`changes.json` 和运行输出。完整路径规则见[状态约定](state-contract.md#临时成果与交付)。
 
 `adapter="codex"` 座位的派单在 prompt 末尾、观察记录要求之前固定追加提醒（panel 也有，文本座位没有）：Codex workspace-write 写单说明默认已开放网络和本地端口，只能写工作目录及明确开放的 worktree Git 目录；本单用了 `--no-net` 则说明不能联网、不能监听本地端口。当 `worktree_writable_roots(workdir)` 非空时，写单另加「本目录是 linked worktree，git add 可用；git commit 及其它改 refs 的操作会被沙箱拒绝，不要尝试，改动留在暂存区，由主会话提交。」普通仓库写单及只读单不加该句。验收因沙箱失败不得绕过或改测试迁就，回答须列「需主会话补跑」小节，写出命令和失败原因。写单和只读单都提醒：规则、数据字段含义的转述以原文为准，发现不符按原文理解，并在回答中指出不符之处（附 path:line）。
 

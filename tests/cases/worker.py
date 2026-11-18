@@ -1,5 +1,6 @@
 """worker regression cases."""
 from __future__ import annotations
+from cases.delivery import scratch_readonly
 
 from support import (
     inprocess_sh,
@@ -154,7 +155,7 @@ def run_dir_persist():
             check("全文：" not in r.stderr, r.stderr)
             check(r.stderr.splitlines()[-1] == f"[ai-worker] 排查：{row['run_dir']}（output.md 没写成功，全文只在上面的输出里）", r.stderr)
 
-        # 归档目录不可创建时仍执行；agent-use 临时输入不影响答复。
+        # scratch 无法创建时拒绝执行，不能回退到公共临时目录。
         blocked = t / "blocked-state"
         blocked.mkdir()
         (blocked / "runs").write_text("占位文件")
@@ -162,16 +163,15 @@ def run_dir_persist():
             r = inprocess_sh([sys.executable, str(REPO / "ai_worker.py"), seat, str(t), "10",
                     str(prompt), "--ro", "--no-fallback"],
                    env=dict(env, AIW_STATE=str(blocked)))
-            check(r.returncode == 0 and r.stdout == expected and "警告：写" in r.stderr, repr(r))
+            check(r.returncode == 1 and not r.stdout and 'scratch 创建失败' in r.stderr, repr(r))
             row = json.loads((blocked / "seat-ledger.jsonl").read_text().splitlines()[-1])
-            check(row["run_dir"] is None, str(row))
-            check("全文：" not in r.stderr and "排查：" not in r.stderr, r.stderr)
+            check(row['capabilities']['scratch_writable'] is False, str(row))
         missing = t / "missing-state"
         r = inprocess_sh([sys.executable, str(REPO / "ai_worker.py"), "codex", str(t), "10",
                 str(prompt), "--ro", "--no-fallback"],
                env=dict(env, AIW_STATE=str(missing), CODEX_BIN=str(t / "no-codex")))
         row = json.loads((missing / "seat-ledger.jsonl").read_text().splitlines()[-1])
-        check(r.returncode == 1 and row["run_dir"] is None and not (missing / "runs").exists(), repr(r))
+        check(r.returncode == 1 and (Path(row['run_dir']) / 'scratch').is_dir(), repr(r))
 
 
 
@@ -794,7 +794,7 @@ def agent_use_transient():
             if kind == "transient":
                 check(f"[doubao] reason={reason}，按顶替链换下一家" in result.stderr, result.stderr)
                 if no_fallback:
-                    tail = result.stderr.split("[ai-worker] 全链都不可用\n", 1)[-1].split("\n[ai-worker] 排查：", 1)[0]
+                    tail = result.stderr.split("[ai-worker] 全链都不可用\n", 1)[-1].split("\n[ai-worker]", 1)[0]
                     check(len(tail) == 800 and "TAIL_SENTINEL" in tail and "HEAD_SENTINEL" not in tail,
                           "全链 transient 应打印最后 err 的 800 字符尾部: " + result.stderr)
             if kind == "other":
@@ -1045,11 +1045,11 @@ def worker_regression():
         argf = t / "codex.args"
         p = run("codex", extra=(), FAKE_CODEX_ARGS=str(argf)); check(p.returncode == 0 and "codex ok" in p.stdout and prov() == "codex", f"codex 写任务: {p.stderr}")
         a = argf.read_text().splitlines()
-        check(a[:10] == ["exec", "-m", "gpt-6.1-sol", "-c", 'model_reasoning_effort="medium"', "-c", 'sandbox_workspace_write.network_access=true', "-c", 'shell_environment_policy.set.AIW_NESTED="1"', "--cd"] and "workspace-write" in a, f"codex 应用 sol + medium + 可写且默认联网: {a}")
+        check(a[a.index('-m') + 1] == 'gpt-6.1-sol' and 'model_reasoning_effort="medium"' in a and 'sandbox_workspace_write.network_access=true' in a and 'workspace-write' in a, f"codex 应用 sol + medium + 可写且默认联网: {a}")
         p = run("codex-sol", extra=(), FAKE_CODEX_ARGS=str(argf)); a = argf.read_text().splitlines()
-        check("read-only" in a and "workspace-write" not in a, f"codex-sol 不带 --ro 也必须只读: {a}")
+        check(scratch_readonly(a), f"codex-sol 不带 --ro 也必须只读: {a}")
         p = run("codex-sol", FAKE_CODEX_ARGS=str(argf)); a = argf.read_text().splitlines()
-        check(p.returncode == 0 and a[2] == "gpt-6.1-sol" and "read-only" in a and 'model_reasoning_effort="low"' in a, f"codex-sol 应用 sol + low + 只读: {a}")
+        check(p.returncode == 0 and a[a.index('-m') + 1] == "gpt-6.1-sol" and scratch_readonly(a) and 'model_reasoning_effort="low"' in a, f"codex-sol 应用 sol + low + 只读: {a}")
         p = run("codex", extra=("--effort", "high"), FAKE_CODEX_ARGS=str(argf))
         a = argf.read_text().splitlines()
         check(p.returncode == 0 and 'model_reasoning_effort="high"' in a, f"codex high 未生效: {a} {p.stderr}")
@@ -1057,7 +1057,7 @@ def worker_regression():
         check(json.loads(ledger_path.read_text().splitlines()[-1])["effort"] == "high", "账本未记录 high")
         p = run("codex-sol", extra=("--effort", "medium"), FAKE_CODEX_ARGS=str(argf))
         a = argf.read_text().splitlines()
-        check(p.returncode == 0 and 'model_reasoning_effort="medium"' in a and "read-only" in a and "workspace-write" not in a,
+        check(p.returncode == 0 and 'model_reasoning_effort="medium"' in a and scratch_readonly(a),
               f"codex-sol medium 应仍只读: {a} {p.stderr}")
         before = ledger_path.read_text()
         for extra in (("--effort", "ultra"), ("--effort",), ("--effort", "--ro"),
@@ -1078,7 +1078,7 @@ def worker_regression():
         check(a[0] == "--session-id" and len(a[1]) == 36 and a[1].count("-") == 4, f"claude 应带会话编号: {a}")
         a = a[2:]
         # --disallowedTools 吃多个值，prompt 前必须有 -- 分隔（2026-10-07 两机实测 prompt 被吞成禁用规则）
-        check(p.returncode == 0 and prov() == "claude" and a[:5] == ["--model", "opus", "-p", "--output-format", "text"] and "Read,Grep,Glob" in a and any("Bash" in x and "Edit" in x for x in a) and a[9] == "--" and a[10].startswith("今天是 ") and a[11:] == ["", pf.read_text()],
+        check(p.returncode == 0 and prov() == "claude" and a[:5] == ["--model", "opus", "-p", "--output-format", "text"] and "Read,Grep,Glob" in a and any("Bash" in x and "Edit" in x for x in a) and a[9] == "--" and a[10].startswith("今天是 ") and a[11:13] == ["", pf.read_text()] and 'scratch_writable=false' in a[-1],
               f"claude 座位参数不对: {a} {p.stderr}")
         row = json.loads(ledger_path.read_text().splitlines()[-1])
         check(row.get("tokens") is None and row.get("tokens_null_reason") == "transcript_missing", f"没有转录应记未知: {row}")
@@ -1152,7 +1152,7 @@ def codex_net():
             check(argv.count(override) == int(online), str(argv))
             if online:
                 check(argv[argv.index(override)-1] == '-c', str(argv))
-                check(argv.index(override) < argv.index('--skip-git-repo-check'), str(argv))
+                check(argv.index(override) < next(i for i, arg in enumerate(argv) if arg.startswith('今天是 ')), str(argv))
             task = (Path(row['run_dir']) / 'task.txt').read_text()
             check(('默认已开放网络和本地端口' in task) == online, task)
             check(('本单不能联网、不能监听本地端口（--no-net）' in task) == (not online), task)
@@ -1164,7 +1164,10 @@ def codex_net():
             for seat, flags in (('codex', ['--ro']), ('codex', ['--text']), ('codex-sol', []),
                                 ('workbuddy', ['--ro']), ('claude', [])):
                 r = sh(cmd + [seat, str(work), '10', str(prompt), network_flag, *flags])
-                check(r.returncode == 64 and network_flag in r.stderr and '只用于' in r.stderr, repr(r))
+                if network_flag == '--no-net' and seat.startswith('codex'):
+                    check(r.returncode == 0, repr(r))
+                else:
+                    check(r.returncode == 64 and network_flag in r.stderr and '只用于' in r.stderr, repr(r))
         # 网络默认值只影响实际使用 workspace-write 的 Codex 适配器。
         with patch.object(worker.shutil, 'which', return_value='/fake/bin'):
             for seat, ro in (('codex', True), ('codex-sol', True), ('claude-write', False)):
@@ -1181,7 +1184,7 @@ def codex_net():
         write_legacy_local(local, {'seats': {'codex': {'argv_rw': argv_rw}}})
         for network_flag in ('--net', '--no-net'):
             r, _, _ = run(flags=(network_flag, '--no-fallback'), AIW_CONFIG=str(local))
-            check(r.returncode == 64 and network_flag in r.stderr and '只用于' in r.stderr, repr(r))
+            check(r.returncode == 64, repr(r))
         r, row, _ = run(flags=('--no-fallback',), AIW_CONFIG=str(local), FAKE_CODEX_ARGS=str(args))
         check(r.returncode == 0 and override not in args.read_text(), r.stderr)
         check('沙箱说明' not in (Path(row['run_dir']) / 'task.txt').read_text(), str(row))
@@ -1200,14 +1203,16 @@ def codex_net():
                 r, row, _ = run(flags=flags, AIW_CONFIG=str(local), FAKE_CODEX='auth_sol',
                                 FAKE_CODEX_AUTH_MARKER=str(fresh / 'auth-marker'),
                                 FAKE_CODEX_ARGS=str(args), FAKE_CLAUDE_ARGS=str(args))
+                if target == 'claude-write' and offline:
+                    check(r.returncode == 1 and '无法保证 --no-net' in r.stderr, r.stderr)
+                    check(row['capabilities']['network'] is None, str(row))
+                    continue
                 check(r.returncode == 0 and row['actual'] == target, r.stderr + str(row))
                 argv = args.read_text().splitlines()
                 check((override in argv) == (target == 'backup' and not offline), str(argv))
                 task = (Path(row['run_dir']) / 'task.txt').read_text()
                 check(('默认已开放网络和本地端口' in task) == (target == 'backup' and not offline), task)
                 check(('本单不能联网' in task) == (target == 'backup' and offline), task)
-                if target == 'claude-write' and offline:
-                    check('--no-net 不生效' in r.stderr, r.stderr)
 
 
 
@@ -1314,7 +1319,7 @@ def codex_dispatch_reminders():
         task = (Path(row['run_dir']) / 'task.txt').read_text()
         check(semantic in task and '沙箱说明' not in task and '已开放网络' not in task, task)
         argv = args.read_text().splitlines()
-        check('read-only' in argv and 'sandbox_workspace_write.network_access=true' not in argv,
+        check(scratch_readonly(argv),
               str(argv))
         # 上一段故意触发认证熔断；后续写单用全新的 fixture。
         fresh = root / 'linked-fixture'; fresh.mkdir()

@@ -543,6 +543,7 @@ def findings_worker_prompt_filters():
         spec = importlib.util.spec_from_file_location('worker_prompt_filters', harness / 'ai_worker.py')
         worker = importlib.util.module_from_spec(spec); spec.loader.exec_module(worker)
         body = prompt.read_text()
+        check(f._handwritten_prompt(task) == body, '真实任务的 scratch 提醒未剥离')
         check(f._handwritten_prompt(prefix + body) == body, '日期前缀未剥离')
         check(f._handwritten_prompt(body + worker.PANEL_FORMAT) == body, '会诊格式未剥离')
         check(f._handwritten_prompt(body + '\n\n' + f.SUFFIX) == body, '观察记录未剥离')

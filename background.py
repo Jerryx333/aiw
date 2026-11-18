@@ -33,7 +33,7 @@ HERE = Path(__file__).resolve().parent
 STATE = Path(getenv("AIW_STATE", HERE / "state"))
 JOBS = STATE / "bg"
 DISPATCH_FLAGS = {"--ro", "--text", "--worktree", "--net", "--no-net", "--no-fallback", "--chain", "--no-findings",
-                  "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout"}
+                  "--allow-nested", "--attach", "--effort", "--verify", "--verify-timeout", "--deliver"}
 STATES = {0: "succeeded", 124: "timeout", 130: "interrupted"}
 USAGE = __doc__.split("\n\n")[1]
 

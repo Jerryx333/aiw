@@ -218,3 +218,11 @@ agent-use 协议不兼容的账本 `kind=incompatible` 对应 breaker 的 `not_i
 纯文本一行，保存 Codex 主会话的线程 ID。`aiw tui` 生成随机标识并通过环境传给 codex，标识只接受 `[A-Za-z0-9_-]+`。ai_worker 在派单发布在途记录时，若会话来自 `CODEX_THREAD_ID` 且 `AIW_NESTED` 不为 `1`，先写同目录临时文件再原子 replace；写失败仅警告，不阻断派单。`aiw tui-status` 读取此文件，将 `{"session_id": "<id>"}` 送给可选组件 `aiw-board statusline`。首单前没有映射，显示空闲；`aiw gc` 按文件 mtime 和指定天数清理，支持 `--dry-run`。
 
 workspace agent_use 写单与 CLI 写单共用 `changed_files`、`baseline-status.txt` 和文件变化汇报；ro 不增加改动字段。findings 的 `partial_context` 按实际执行座位和本次模式判断：agent_use 在非 workspace 或本次 `--text`（含 draft/map 自动启用）时为 true，workspace review 时为 false。snapshot 对启用 workspace 的 agent_use 座位形状记录 `workspace: true`，缺省形状保持不变。
+
+## 临时成果与交付
+
+每次本机执行在运行目录保留 `scratch/`，通过 `AIW_SCRATCH`、`TMPDIR` 传给执行方，与运行目录一起由 gc 清理。仅 Codex workspace-write 写单增加该可写根，保持原 `/tmp` 权限。只读/文本单保留 read-only 沙箱和仓库 cwd，不额外开放 scratch，报告 `scratch_writable=false`、`network=false`；拒绝改变 cwd 或增加写根的路径参数。非 workspace-write 写单及其它适配器保持原沙箱和 cwd，报告 `scratch_writable=false`、`network=null`，不额外扩权。未支持可写 scratch 时 `--deliver` 明确失败。
+
+`--deliver <绝对目录>` 要求执行方写 `$AIW_SCRATCH/deliver/`。仅执行、结构校验和验收成功后，由 aiw 复制普通文件，复制时计算 SHA-256；硬链接发布成功复用该摘要，已有目标则核对内容。同名同内容可重复交付，同名不同内容报错且不覆盖。总大小上限 2 GiB，拒绝软链接、硬链接及特殊文件；创建目标目录前检查全部冲突，失败回滚本次新建的文件和目录，保留原文件，回滚失败明确记入 error，不声称整批原子性。目标必须位于用户 home 内且不能是 home 本身；目标在 home 下的路径及交付相对路径均禁止任何以点开头的路径段。按请求路径和真实路径、不区分大小写禁止 `.ssh`、`.pal`、`.pal-peer`、`.gnupg`、`Library/Keychains`、`.config/op`、`Library/Application Support/1Password`（原 PRIVATE 加 `.pal-peer`），另禁止 `Library/LaunchAgents`、`Library/LaunchDaemons`、`.config/autostart`、`.local/bin`、`.claude`、`.codex`、`.config/aiw`、`.zshrc`、`.zshenv`、`.zprofile`、`.bashrc`、`.bash_profile`、`.profile`；交付相对路径执行同样检查。转发执行暂不支持交付，明确拒绝，避免写到另一台机器的同名目录。
+
+运行 `result.json`、账本和 stderr 最终摘要包含 `capabilities`：`scratch_writable` 为是否实际开放临时目录写权限，`network` 为执行工具联网权限（true/false；无法验证的适配器为 null），`deliver` 为本次是否启用交付。交付结果在 `delivery` 中包含 `target`、`delivered`（相对路径和 sha256）、`error`；同时写入 `changes.json` 和运行输出。交付失败不顶替执行方。scratch 创建失败时拒绝执行，不回退到公共临时目录。
