@@ -276,6 +276,26 @@ def scratch_cleanup_boundaries():
             check(list(external.iterdir()) == [external / 'keep'], '缓存软链修改了外部目录')
 
 
+def delivery_forward_local():
+    import ai_worker as worker
+    from contextlib import redirect_stderr
+    from io import StringIO
+    from unittest.mock import patch
+    with patch.object(worker, 'SEATS', {'seats': {'local': {'local_only': True}, 'remote': {}}}), \
+            patch.object(worker.subprocess, 'run') as run, \
+            patch.object(worker.subprocess, 'Popen') as popen:
+        for seat in ('local', 'remote'):
+            stderr = StringIO()
+            with redirect_stderr(stderr):
+                code = worker.forward_dispatch(['unused'], seat, '/repo', '10', '/prompt', set(), [],
+                                               {'deliver': '/home/out'}, {}, chain=[seat])
+            check(code is None, '带 --deliver 的派单应留在本机执行')
+            if seat == 'remote':
+                check(stderr.getvalue() == '[ai-worker] --deliver 只在本机执行，不转发\n', stderr.getvalue())
+            run.assert_not_called()
+            popen.assert_not_called()
+
+
 def delivery_failure_contract():
     from capabilities import capabilities
     from background import DISPATCH_FLAGS
@@ -285,13 +305,6 @@ def delivery_failure_contract():
     args = ['codex', '/repo', '10', 'prompt', '--deliver', '/home/out', '--schema', 'schema']
     rest, schema, _, positions = split_args(args)
     check(schema == 'schema' and positions == [0, 1, 2, 3] and rest[-2:] == ['--deliver', '/home/out'], rest)
-    import ai_worker as worker
-    from unittest.mock import patch
-    with patch.object(worker, 'SEATS', {'seats': {'local': {'local_only': True}, 'remote': {}}}):
-        for seat, expected in (('local', None), ('remote', 64)):
-            code = worker.forward_dispatch(['unused'], seat, '/repo', '10', '/prompt', set(), [],
-                                           {'deliver': '/home/out'}, {}, chain=[seat])
-            check(code == expected, '交付不能误阻断 local_only，或转发到了远端')
     with tempfile.TemporaryDirectory(dir=Path.home()) as td:
         root = Path(td).resolve()
         prompt = root / 'prompt'; prompt.write_text('task')
@@ -532,6 +545,6 @@ def delivery_size_and_hash():
         check('2 GiB' in result['error'] and not (root / 'oversize').exists(), result)
 
 
-CASES = {f.__name__: f for f in (scratch_delivery, delivery_boundaries, delivery_failure_contract,
+CASES = {f.__name__: f for f in (scratch_delivery, delivery_boundaries, delivery_forward_local, delivery_failure_contract,
     scratch_policy_override, scratch_cache_environment, scratch_cleanup_boundaries, scratch_readonly_paths, scratch_write_modes, scratch_readonly_context,
     delivery_execution_paths, delivery_rollback, delivery_size_and_hash)}

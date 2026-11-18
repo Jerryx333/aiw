@@ -3110,8 +3110,8 @@ def forward_dispatch(command, seat, workdir, timeout_s, prompt_file, flags, atta
     if any(SEATS['seats'].get(name, {}).get('local_only') for name in wire_chain):
         return None
     if values.get('deliver'):
-        print('[ai-worker] --deliver 暂不支持转发执行，拒绝跨机器交付', file=sys.stderr)
-        return 64
+        print('[ai-worker] --deliver 只在本机执行，不转发', file=sys.stderr)
+        return None
     if 'agent-runtime-v1' in SEATS.get('capabilities', []):
         from agent_forward import describe, PROTOCOL
         # Nothing has been queued yet: a forwarder that cannot check identities, or an
