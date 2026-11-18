@@ -255,7 +255,8 @@ def account_claude_relay():
             check(not any(k.startswith('ANTHROPIC_') for k in child) and 'CLAUDE_CODE_USE_BEDROCK' not in child,
                   f'{seat}: 外面的 ANTHROPIC_* 没清掉')
             if seat == 'claude-write':
-                check(settings['sandbox'] == {'enabled': True, 'allowUnsandboxedCommands': False, 'failIfUnavailable': True},
+                check(settings['sandbox'] == {'enabled': True, 'autoAllowBashIfSandboxed': True,
+                                              'allowUnsandboxedCommands': False, 'failIfUnavailable': True},
                       '原有 sandbox 设置丢失')
                 check(argv.index('--settings') < argv.index('--'), '--settings 应在 -- 之前')
                 check('ANTHROPIC_BETAS' not in senv and senv.get('KEEP') == '1', '原 settings 的 ANTHROPIC_* 没清掉或误删其它变量')
@@ -304,8 +305,10 @@ def account_absent_unchanged():
             if seat == 'codex-sol':
                 check(rec['env']['CODEX_HOME'] == str((root / 'state/codex-home').resolve()), '共享隔离 home 行为变了')
             else:
-                check('--settings' not in rec['argv'] and rec['env'].get('ANTHROPIC_API_KEY') == 'outer-key',
-                      '无账号的 claude 不应改参数或环境')
+                argv = rec['argv']
+                settings = json.loads(argv[argv.index('--settings') + 1])
+                check(argv.count('--settings') == 1 and set(settings) == {'sandbox', 'permissions'}
+                      and rec['env'].get('ANTHROPIC_API_KEY') == 'outer-key', '无账号的 Claude 不应注入账号配置')
             check(not (root / 'state/codex-home-api').exists(), '无账号不应生成中转 home')
             (root / 'record.json').unlink()
 
