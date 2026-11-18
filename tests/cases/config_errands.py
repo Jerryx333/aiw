@@ -833,8 +833,8 @@ def shipped_tool_templates_validate_readonly_recipes():
     with patch.dict(w.SEATS['seats'], expanded['seats']):
         for name in ('codex', 'claude-code'):
             row = expanded['seats'][name]
-            argv = [a.format(bin=row['bin'], prompt='example', workdir='/example') for a in row['argv_ro']]
-            check(w.readonly_argv_error(name, argv, 'example') is None, name)
+            argv = w.format_seat_argv(row, row['argv_ro'], row['bin'], 'example', '/example')
+            check(w.readonly_argv_error(name, argv, 'example', ['/example']) is None, name)
 
 CASES['shipped_tool_templates_validate_readonly_recipes'] = shipped_tool_templates_validate_readonly_recipes
 

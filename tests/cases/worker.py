@@ -1071,14 +1071,14 @@ def worker_regression():
         p = run("codex-sol", extra=("--effort", "high"), FAKE_CODEX="quota")
         check(p.returncode == 1 and json.loads(ledger_path.read_text().splitlines()[-1])["effort"] == "high", "失败账本未记录 effort")
         (t / "state" / "breaker.json").unlink()
-        # claude 座位：只读工具白名单，禁 Bash/Edit/Write
         cf = t / "claude.args"
         p = run("claude", extra=(), FAKE_CLAUDE_ARGS=str(cf)); a = cf.read_text().splitlines()
         # 第一对是 --session-id：跑完按它找转录数 token
         check(a[0] == "--session-id" and len(a[1]) == 36 and a[1].count("-") == 4, f"claude 应带会话编号: {a}")
         a = a[2:]
-        # --disallowedTools 吃多个值，prompt 前必须有 -- 分隔（2026-10-07 两机实测 prompt 被吞成禁用规则）
-        check(p.returncode == 0 and prov() == "claude" and a[:5] == ["--model", "opus", "-p", "--output-format", "text"] and "Read,Grep,Glob" in a and any("Bash" in x and "Edit" in x for x in a) and a[9] == "--" and a[10].startswith("今天是 ") and a[11:] == ["", pf.read_text()],
+        check(p.returncode == 0 and prov() == "claude" and a[:5] == ["--model", "opus", "-p", "--restricted", "--strict-mcp-config"]
+              and a[a.index("--tools") + 1] == "Read,Grep,Glob,Bash" and a[a.index("--") + 1].startswith("今天是 ")
+              and a[-2:] == ["", pf.read_text()],
               f"claude 座位参数不对: {a} {p.stderr}")
         row = json.loads(ledger_path.read_text().splitlines()[-1])
         check(row.get("tokens") is None and row.get("tokens_null_reason") == "transcript_missing", f"没有转录应记未知: {row}")
@@ -1448,6 +1448,8 @@ def attach():
                          ("late.txt", "二进制"), ("src/../.npmrc", "凭据")):
             p = run("--attach", bad)
             check(p.returncode == 64 and why in p.stderr, f"{bad!r} 应被拒（{why}）: {p.returncode} {p.stderr}")
+        (wd / ".git" / "config").unlink()
+        (wd / ".git").rmdir()
         p = run(*[x for _ in range(51) for x in ("--attach", "src/a.py")])
         check(p.returncode == 64 and "最多" in p.stderr, f"附件个数应有上限: {p.stderr}")
         for bad, why in ((".env", "凭据"), ("img.bin", "二进制"), ("../outside.py", "不在工作目录"), ("big.txt", "超过"), ("nope.py", "不存在")):

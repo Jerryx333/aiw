@@ -121,9 +121,9 @@ def claude_write_argv():
     with tempfile.TemporaryDirectory() as td:
         t = Path(td)
         cli = t / 'claude'
-        cli.write_text('#!' + sys.executable + '\nimport json,os,sys\nprint(json.dumps({"argv":sys.argv[1:],"cwd":os.getcwd()}))\n')
+        cli.write_text('#!' + sys.executable + '\nimport json,os,sys\nprint(json.dumps({"argv":sys.argv[1:],"cwd":os.getcwd(),"path":os.environ["PATH"]}))\n')
         cli.chmod(0o755)
-        cmd, env, wd = worker_call(t, CLAUDE_BIN=str(cli))
+        cmd, env, wd = worker_call(t, CLAUDE_BIN=str(cli), PATH='/usr/bin:/bin')
         cmd[2] = 'claude-write'; cmd.remove('--ro')
         r = sh(cmd + ['--no-findings'], env=env)
         check(r.returncode == 0, r.stderr)
@@ -133,10 +133,66 @@ def claude_write_argv():
         check(argv[argv.index('--permission-mode')+1] == 'acceptEdits', argv)
         check(argv[argv.index('--tools')+1] == 'Read,Grep,Glob,Edit,Write,Bash', argv)
         check(json.loads(argv[argv.index('--settings')+1]) == {'sandbox': {
-            'enabled': True, 'allowUnsandboxedCommands': False, 'failIfUnavailable': True}}, argv)
+            'enabled': True, 'autoAllowBashIfSandboxed': True, 'allowUnsandboxedCommands': False,
+            'failIfUnavailable': True}, 'permissions': {'allow': ['Bash(git add:*)', 'Bash(git commit:*)'],
+            'deny': ['Bash(git push:*)', 'Bash(ssh:*)', 'Bash(scp:*)', 'Bash(rsync:*)']}}, argv)
         check(argv.count('--model') == 1 and argv[argv.index('--model')+1] == 'opus', argv)
         check(record['cwd'] == str(wd.resolve()), record)
+        check(record['path'] == ('/usr/bin:/bin:/opt/homebrew/bin' if sys.platform == 'darwin' else '/usr/bin:/bin'), record)
 
+
+def claude_sandbox_recipes():
+    import ai_worker as w
+    public = json.loads((REPO / 'seats.json').read_text())['seats']
+    tool = json.loads((REPO / 'tools.json').read_text())['tools']['claude-code']
+    check(public['claude-write']['argv_rw'] == tool['argv_rw'], 'RW recipes differ')
+    for seat in ('claude', 'claude-write'):
+        check(public[seat]['argv_ro'] == tool['argv_ro'], f'{seat} RO recipe differs')
+    with tempfile.TemporaryDirectory() as td:
+        workdir = Path(td).resolve() / '空 格 "quote" \\path {workdir}'
+        workdir.mkdir()
+        raw = w.format_seat_argv(tool, ['{bin}', '--settings', '{workdir}/settings.json'],
+                                 'claude', '', str(workdir))
+        check(raw[-1] == str(workdir / 'settings.json'), raw)
+        checkout = Path(td).resolve() / 'main'
+        check(sh(['git', 'init', str(checkout)]).returncode == 0, checkout)
+        (workdir / '.git').write_text(f'gitdir: {checkout / ".git"}\n')
+        prompt = '--allowed-tools'
+        with patch.dict(w.SEATS['seats'], {'claude-code': tool}):
+            with patch.dict(os.environ, {'CLAUDE_BIN': sys.executable}):
+                for seat, mode in (('claude-code', True), ('claude-code', False), ('claude', True),
+                                   ('claude-write', True), ('claude-write', False)):
+                    argv = w.build_argv(seat, prompt, str(workdir), mode)
+                    model = [] if seat == 'claude-code' else ['--model', 'opus']
+                    allow = ['Bash(git add:*)', 'Bash(git commit:*)']
+                    deny = ['Bash(git push:*)', 'Bash(ssh:*)', 'Bash(scp:*)', 'Bash(rsync:*)']
+                    sandbox = {'enabled': True, 'autoAllowBashIfSandboxed': True,
+                               'allowUnsandboxedCommands': False, 'failIfUnavailable': True}
+                    roots = [str(workdir), str(checkout / '.git')]
+                    if mode:
+                        sandbox['filesystem'] = {'denyWrite': roots}
+                    expected_settings = {'sandbox': sandbox, 'permissions': (
+                        {'deny': allow + deny} if mode else {'allow': allow, 'deny': deny})}
+                    flags = ['-p', '--restricted', '--strict-mcp-config', '--tools',
+                             'Read,Grep,Glob,Bash' if mode else 'Read,Grep,Glob,Edit,Write,Bash',
+                             '--permission-mode', 'default' if mode else 'acceptEdits', '--permission-prompts',
+                             'none', '--settings']
+                    settings_index = argv.index('--settings') + 1
+                    check(argv[:settings_index] == [sys.executable, *model, *flags], argv)
+                    check(argv[settings_index + 1:] == ['--output-format', 'text', '--', prompt], argv)
+                    check(json.loads(argv[settings_index]) == expected_settings, argv)
+                    if mode:
+                        check(w.readonly_argv_error(seat, argv, prompt, roots) is None, argv)
+                        for field, value in [('allowUnsandboxedCommands', True), ('enabled', 1),
+                                             ('filesystem', {'denyWrite': [str(workdir)]}),
+                                             ('excludedCommands', ['node'])]:
+                            modified = {**expected_settings, 'sandbox': {**sandbox, field: value}}
+                            bad = list(argv)
+                            bad[settings_index] = json.dumps(modified)
+                            check(w.readonly_argv_error(seat, bad, prompt, roots) is not None, bad)
+                (workdir / '.git').write_text('gitdir: missing\n')
+                argv = w.build_argv('claude', prompt, str(workdir), True)
+                check(w.readonly_argv_error('claude', argv, prompt, w.claude_readonly_paths(workdir)) is not None, argv)
 
 def claude_model_opus():
     import ai_worker as w
@@ -362,7 +418,7 @@ def generated_force_mode_never_widens():
 
 
 CASES = {f.__name__: f for f in (role_resolve_matrix, role_write_skips_readonly, role_name_conflict, builtin_commands_match_dispatch, role_review_forces_ro,
-    role_write_codex_main_refused, role_doctor_mapping, claude_write_argv, claude_model_opus,
+    role_write_codex_main_refused, role_doctor_mapping, claude_write_argv, claude_sandbox_recipes, claude_model_opus,
     route_role_seats, panel_skips_unavailable, panel_single_family_hint, map_default_role, role_text_seat_write_hint, role_ro_argv_enforced, seat_disabled_everywhere, seat_skipped_by_caller,
     legacy_local_config_roles, panel_explicit_unavailable, role_preselect_readonly)}
 

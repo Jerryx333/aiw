@@ -177,10 +177,10 @@ def role_candidate_reason(role, seat):
         if not cfg.get("argv_ro"):
             return "缺少只读执行方式"
         try:
-            argv = [arg.format(bin=cfg['bin'], prompt='inspection', workdir='/inspection') for arg in cfg['argv_ro']]
+            argv = format_seat_argv(cfg, cfg['argv_ro'], cfg['bin'], 'inspection', '/inspection')
         except (KeyError, ValueError, TypeError):
             return "只读执行方式无效"
-        reason = readonly_argv_error(seat, argv, 'inspection')
+        reason = readonly_argv_error(seat, argv, 'inspection', ['/inspection'])
         if reason:
             return reason
     return None
@@ -2213,12 +2213,57 @@ def dispatch_reminders(seat: str, ro: bool, workdir: str, net: bool = True,
             "并在回答中指出不符之处（附 path:line）。")
 
 
+def format_seat_argv(cfg, recipe, binary, prompt, workdir):
+    claude = seat_agent(cfg) == 'claude'
+    argv = []
+    for index, arg in enumerate(recipe):
+        json_settings = claude and (arg.startswith('--settings={{') or (
+            index > 0 and recipe[index - 1] == '--settings' and arg.lstrip().startswith('{{')))
+        path = json.dumps(workdir, ensure_ascii=False)[1:-1] if json_settings else workdir
+        argv.append(arg.format(bin=binary, prompt=prompt, workdir=path))
+    return argv
+
+
+def claude_readonly_paths(workdir):
+    """Protect the checkout and any Git metadata outside it; '/' signals failed discovery."""
+    path = Path(workdir).resolve()
+    roots = [str(path)]
+    if any(os.path.lexists(parent / '.git') for parent in (path, *path.parents)):
+        try:
+            result = subprocess.run(['git', 'rev-parse', '--path-format=absolute', '--show-toplevel',
+                                     '--git-common-dir', '--absolute-git-dir'], cwd=path,
+                                    env=repository_git_env(), capture_output=True, text=True,
+                                    check=True, timeout=10)
+            paths = result.stdout.removesuffix('\n').split('\n')
+            if len(paths) != 3 or not all(Path(entry).is_absolute() for entry in paths):
+                return [str(path), '/']
+            for entry in paths:
+                resolved = Path(entry).resolve()
+                if not any(resolved.is_relative_to(root) for root in roots):
+                    roots.append(str(resolved))
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+            return [str(path), '/']
+    return roots
+
+
 def build_argv(seat: str, prompt: str, workdir: str, ro: bool, effort: str | None = None, net: bool = True) -> list[str] | None:
     cfg = SEATS["seats"][seat]
     binary = os.environ.get(cfg.get("bin_env", "")) or cfg["bin"]
     if shutil.which(binary) is None and not Path(binary).exists():
         return None
-    argv = [a.format(bin=binary, prompt=prompt, workdir=workdir) for a in (cfg["argv_ro"] if ro else cfg["argv_rw"])]
+    recipe = cfg['argv_ro'] if ro else cfg['argv_rw']
+    argv = format_seat_argv(cfg, recipe, binary, prompt, workdir)
+    if ro and seat_agent(cfg) == 'claude' and '--settings' in recipe:
+        index = recipe.index('--settings') + 1
+        if index < len(recipe) and '"{workdir}"' in recipe[index]:
+            try:
+                settings = json.loads(argv[index])
+                filesystem = settings['sandbox']['filesystem']
+                if filesystem['denyWrite'] == [workdir]:
+                    filesystem['denyWrite'] = claude_readonly_paths(workdir)
+                    argv[index] = json.dumps(settings, ensure_ascii=False, separators=(',', ':'))
+            except (KeyError, TypeError, ValueError):
+                pass
     if seat_adapter(seat) == "codex" and len(argv) > 1 and argv[1] == "exec":
         # Codex 适配器固有需求：inherit="core" 会丢掉 child_env() 设置的父进程防嵌套标记，
         # Codex 内层 shell 不继承 AIW_NESTED，需显式设置执行方 shell 环境。
@@ -2309,7 +2354,35 @@ def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effor
         raise
 
 
-def readonly_argv_error(seat, argv, prompt=None):
+def claude_readonly_bash(options, deny_write):
+    if not deny_write or '/' in deny_write or options[-1:] != ['--']:
+        return False
+    args = options[1:-1]
+    for flag in ('--session-id', '--model'):
+        if args[:1] == [flag] and len(args) > 1 and not args[1].startswith('-'):
+            args = args[2:]
+    if args[:-3] != ['-p', '--restricted', '--strict-mcp-config', '--tools', 'Read,Grep,Glob,Bash',
+                    '--permission-mode', 'default', '--permission-prompts', 'none', '--settings']:
+        return False
+    if args[-2:] != ['--output-format', 'text']:
+        return False
+    try:
+        settings = json.loads(args[-3])
+    except ValueError:
+        return False
+    sandbox = settings.get('sandbox') if isinstance(settings, dict) else None
+    if not isinstance(sandbox, dict) or any(sandbox.get(key) is not value for key, value in (
+            ('enabled', True), ('autoAllowBashIfSandboxed', True), ('allowUnsandboxedCommands', False),
+            ('failIfUnavailable', True))):
+        return False
+    return settings == {'sandbox': {'enabled': True, 'autoAllowBashIfSandboxed': True,
+                                     'allowUnsandboxedCommands': False, 'failIfUnavailable': True,
+                                     'filesystem': {'denyWrite': deny_write}},
+                        'permissions': {'deny': ['Bash(git add:*)', 'Bash(git commit:*)', 'Bash(git push:*)',
+                                                 'Bash(ssh:*)', 'Bash(scp:*)', 'Bash(rsync:*)']}}
+
+
+def readonly_argv_error(seat, argv, prompt=None, deny_write=None):
     """Reject write permissions before starting any CLI, including fallback calls."""
     # Task text is data even when a local template places it before options.
     options = [arg for arg in argv if arg != prompt]
@@ -2321,6 +2394,10 @@ def readonly_argv_error(seat, argv, prompt=None):
                or a.startswith(("--sandbox=", "sandbox_mode=")) for a in options):
             return "只读任务不得覆盖 Codex read-only 沙箱"
     else:
+        if seat_agent(SEATS['seats'][seat]) == 'claude':
+            options = argv[:-1] if prompt is not None and argv[-2:] == ['--', prompt] else argv
+            if claude_readonly_bash(options, deny_write):
+                return None
         # Claude-style options may use equals, comma lists, or multiple values.
         allowing = False
         for arg in options:
@@ -2356,13 +2433,16 @@ def _run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effo
         # 指定会话编号，跑完按它找转录数 token（run_tokens）
         claude_session = str(uuid.uuid4())
         argv[1:1] = ["--session-id", claude_session]
-    violation = readonly_argv_error(seat, argv, prompt) if ro else None
+    deny_write = (claude_readonly_paths(workdir) if ro and claude_session and '--settings' in argv[:-1] else None)
+    violation = readonly_argv_error(seat, argv, prompt, deny_write) if ro else None
     if violation:
         return {"rc": 64, "out": "", "err": violation, "kind": "invalid_argv", "secs": 0}
     locked = preflight(SEATS["seats"][seat])
     if locked:
         return locked
     env = child_env()
+    if claude_session and sys.platform == 'darwin' and '/opt/homebrew/bin' not in env.get('PATH', os.defpath).split(os.pathsep):
+        env['PATH'] = os.pathsep.join(filter(None, (env.get('PATH', os.defpath), '/opt/homebrew/bin')))
     if SEATS["seats"][seat].get("account") is not None:
         reason = apply_account(seat, argv, env)
         if reason:
