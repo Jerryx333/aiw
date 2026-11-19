@@ -160,7 +160,7 @@ def reservation(command, slots=None, max_wait=900, label="", pool="slot"):
                 break
             time.sleep(min(5, remaining))
         waiting = False
-        while pressure_level() >= 2:
+        while pressure_level() >= 4:
             if not waiting:
                 warn("内存压力高，等待…")
                 waiting = True

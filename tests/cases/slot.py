@@ -99,13 +99,23 @@ def slot_memory_timeout():
         fake = f.root / "pressure.py"
         fake.write_text("print(2)\n")
         pressure = f"{sys.executable} {fake}"
+        result = f.run("--", "true", AIW_SLOT_PRESSURE_CMD=pressure,
+                       AIW_SLOT_QOS="nice")
+        check(result.returncode == 0, result.stderr)
+        check("内存压力高" not in result.stderr and "内存等待" not in result.stderr,
+              result.stderr)
+        check("nice" in result.stderr, result.stderr)
+        check(not list(f.root.glob("*.json")), "警告压力下退出仍需释放名额")
+        result = f.run("--status", AIW_SLOT_PRESSURE_CMD=pressure)
+        check("内存压力等级：2" in result.stdout, result.stdout)
+        fake.write_text("print(4)\n")
         result = f.run("--max-wait", "0.2", "--", "true", AIW_SLOT_PRESSURE_CMD=pressure)
         check(result.returncode == 0, result.stderr)
         check("内存压力高，等待" in result.stderr, result.stderr)
         check("内存等待已超过等待上限，直接运行" in result.stderr, result.stderr)
         check(not list(f.root.glob("*.json")), "压力超时后退出仍需释放名额")
         result = f.run("--status", AIW_SLOT_PRESSURE_CMD=pressure)
-        check("内存压力等级：2" in result.stdout, result.stdout)
+        check("内存压力等级：4" in result.stdout, result.stdout)
         result = f.run("--", "true", AIW_SLOT_PRESSURE_CMD="/no-such-pressure-command")
         check(result.returncode == 0 and "内存压力高" not in result.stderr, result.stderr)
 

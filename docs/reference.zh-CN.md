@@ -336,7 +336,7 @@ aiw slot --status
 
 `aiw slot` 为任何项目的全量或较重测试提供全机共享名额。`--slots` 优先于 `AIW_TEST_SLOTS`，默认 2，必须是正整数；同机各会话应使用一致的名额数。`--label` 为持有者说明，默认空。`--` 后 argv 原样执行，不经 shell；缺命令或参数非法返回 64，子命令 stdout/stderr 直接继承、退出码原样返回，SIGINT/SIGTERM 转发给子进程组并等待退出。
 
-名额目录由 `AIW_SLOT_DIR` 指定，默认 `/tmp/aiw-slots`，新目录权限 0777；创建失败退回 `$TMPDIR/aiw-slots` 并提示「名额只在本沙箱内生效」。逐个尝试 flock，持有到命令结束，崩溃自动释放；全部占满时每 5 秒重试，首次显示排队和持有者摘要。取得名额后读取 macOS 内存压力等级（1 正常、2 警告、4 严重），≥2 每 15 秒复查，读取失败视为正常。`--max-wait` 默认 900 秒，0 表示不等，排队和内存等待共用上限；到期明确提示「已超过等待上限，直接运行」，名额未取得时不持有名额。`--status` 显示名额数、压力等级和锁仍被持有的记录，清理陈旧 json，无持有者显示「空闲」。
+名额目录由 `AIW_SLOT_DIR` 指定，默认 `/tmp/aiw-slots`，新目录权限 0777；创建失败退回 `$TMPDIR/aiw-slots` 并提示「名额只在本沙箱内生效」。逐个尝试 flock，持有到命令结束，崩溃自动释放；全部占满时每 5 秒重试，首次显示排队和持有者摘要。取得名额后读取 macOS 内存压力等级（1 正常、2 警告、4 严重），≥4（严重）时等待并每 15 秒复查，2（警告）时不等待、照常按默认 nice 降优先级运行，读取失败视为正常。`--max-wait` 默认 900 秒，0 表示不等，排队和内存等待共用上限；到期明确提示「已超过等待上限，直接运行」，名额未取得时不持有名额。`--status` 显示名额数、压力等级和锁仍被持有的记录，清理陈旧 json，无持有者显示「空闲」。
 
 默认（未设 `AIW_SLOT_QOS` 或设为 `nice`）只用 `os.nice(10)` 降优先级（nice +10），被拒绝则普通优先级，stderr 说明实际方式。仅 `AIW_SLOT_QOS=bg` 选择后台 QoS：macOS 有 `/usr/sbin/taskpolicy` 时先用 `taskpolicy -b /usr/bin/true` 最小探测，再以 `taskpolicy -b` 启动命令；不可用或探测失败退回 nice。选择 `bg` 时 stderr 警告「主机繁忙时后台 QoS 可能长时间拿不到 CPU，带超时的测试会误判」。`AIW_SLOT_QOS=0` 禁用优先级调整；其它值提示未知值并按默认处理。测试注入可用 `AIW_SLOT_PRESSURE_CMD` 替换压力读取命令（shlex 拆 argv，不经 shell）。
 
@@ -344,9 +344,9 @@ aiw slot --status
 
 `tests/test_harness.py` 不带用例名（包括 `-j 1`）时直接复用 slot 的名额与等待逻辑，并为自身应用相同的 QoS 选择（默认 nice +10）及线程变量设置；定向用例不排队。slot 与全量 harness 都设置 `AIW_SLOT_HELD=1`，子进程继承后跳过重复抢名额。harness 在每个用例临时目录设置独立 `AIW_SLOT_DIR`，避免影响真实名额。派单的 `--verify` 由 aiw 自动排测试名额（整组验收占一个名额，排队时间不计入 `--verify-timeout`，验收命令继承 `AIW_SLOT_HELD=1`），不用再手动包 `aiw slot --`。`--verify` 已通过的命令，主会话不再重跑。
 
-本机执行的写任务（非 `--ro`、非嵌套）另有一组派单名额：池名 `write`，与测试名额同目录、互不占用，`AIW_MAX_WRITES` 设上限（默认 4，非法值按 4 并提示）。占满时排队，排队和内存等待共用 1800 秒上限，到期照跑；持有派单名额不设置 `AIW_SLOT_HELD`，执行方自己跑的 `aiw slot` 仍要排测试名额。转发到别的主机执行的单不占本机派单名额，回本机跑验收时照常排测试名额。
+本机执行的写任务（非 `--ro`、非嵌套）另有一组派单名额：池名 `write`，与测试名额同目录、互不占用，`AIW_MAX_WRITES` 设上限（默认 4，非法值按 4 并提示）。占满时排队，内存压力 ≥4（严重）时等待、2（警告）时不等待，排队和内存等待共用 1800 秒上限，到期照跑；持有派单名额不设置 `AIW_SLOT_HELD`，执行方自己跑的 `aiw slot` 仍要排测试名额。转发到别的主机执行的单不占本机派单名额，回本机跑验收时照常排测试名额。
 
-编译准入：`shims/` 里的 `swift`、`xcodebuild`、`go` 是同一个包装（`shims/gate.sh`）。把这个目录放在 PATH 最前，`swift build`/`swift test`、xcodebuild 构建、`go build`/`go test`/`go vet`/`go install` 和 `go tool <x> build`（如 Heya 的 `go tool mygo build`）就先排上面的测试名额（内存压力 ≥2 时等）；没写 `-j`/`--jobs`/`-jobs`/`-p` 时补上并行编译数（`AIW_BUILD_JOBS`，默认核数一半；`go tool … build` 不补，靠 GOFLAGS）。`swift run`、`go run`/`version`/`env`/`mod`、`go tool mygo dev`、`xcodebuild -version`/`-list`/`-showBuildSettings` 等直接放行。已持有名额（`AIW_SLOT_HELD=1`）只限并行不排队，`AIW_BUILD_GATE=0` 原样放行。包装从 PATH 去掉自己的目录后再找真命令。用途是不靠调用方自觉：`~/.zshenv`、`~/.zprofile`、`~/.zshrc` 末尾各引用一次 `shims/path.zsh`（path_helper 和 `.zshrc` 都会把别的目录排到前面），有 `CLAUDECODE`（Claude Code）、`AIW_NESTED`（执行方）或 `CODEX_THREAD_ID`/`CODEX_SANDBOX`（Codex，待核实）时把目录挪到 PATH 最前，并导出 `AIW_SHIMS`（会自己改 PATH 的脚本改完再把它放回最前）、`AIW_BUILD_JOBS`（沙箱里读不到核数）和 `GOFLAGS=-p=<核数一半>`（绕过包装直接调到 go 的也限并行，命令行 `-p` 优先），并把 shell 本身降到 nice 10（绝对值，子进程继承；`tsc`、npm/pytest 等不经包装的命令也让位给前台 App；`AIW_AGENT_NICE=<值>` 改档位，`=0` 关闭）；主人自己的终端不受影响。只对之后新开的会话生效。
+编译准入：`shims/` 里的 `swift`、`xcodebuild`、`go` 是同一个包装（`shims/gate.sh`）。把这个目录放在 PATH 最前，`swift build`/`swift test`、xcodebuild 构建、`go build`/`go test`/`go vet`/`go install` 和 `go tool <x> build`（如 Heya 的 `go tool mygo build`）就先排上面的测试名额（内存压力 ≥4（严重）时等、2（警告）时不等）；没写 `-j`/`--jobs`/`-jobs`/`-p` 时补上并行编译数（`AIW_BUILD_JOBS`，默认核数一半；`go tool … build` 不补，靠 GOFLAGS）。`swift run`、`go run`/`version`/`env`/`mod`、`go tool mygo dev`、`xcodebuild -version`/`-list`/`-showBuildSettings` 等直接放行。已持有名额（`AIW_SLOT_HELD=1`）只限并行不排队，`AIW_BUILD_GATE=0` 原样放行。包装从 PATH 去掉自己的目录后再找真命令。用途是不靠调用方自觉：`~/.zshenv`、`~/.zprofile`、`~/.zshrc` 末尾各引用一次 `shims/path.zsh`（path_helper 和 `.zshrc` 都会把别的目录排到前面），有 `CLAUDECODE`（Claude Code）、`AIW_NESTED`（执行方）或 `CODEX_THREAD_ID`/`CODEX_SANDBOX`（Codex，待核实）时把目录挪到 PATH 最前，并导出 `AIW_SHIMS`（会自己改 PATH 的脚本改完再把它放回最前）、`AIW_BUILD_JOBS`（沙箱里读不到核数）和 `GOFLAGS=-p=<核数一半>`（绕过包装直接调到 go 的也限并行，命令行 `-p` 优先），并把 shell 本身降到 nice 10（绝对值，子进程继承；`tsc`、npm/pytest 等不经包装的命令也让位给前台 App；`AIW_AGENT_NICE=<值>` 改档位，`=0` 关闭）；主人自己的终端不受影响。只对之后新开的会话生效。
 
 `aiw sync` 先照旧对 aiw 执行 `git pull --ff-only`，失败时保留其退出码；成功后对已存在的 agent-use 和 agent-use-adapters Git 仓库分别快进更新，后两者失败只警告。目录覆盖变量与安装相同。
 
@@ -573,6 +573,7 @@ python3 tests/mutation_check.py credentials locked  # 只运行指定变异
 
 ## 变更记录
 
+- 2026-11-19 `aiw slot` 仅在内存压力 ≥4（严重）时等待；2（警告）时直接运行并照常按默认 nice 降优先级，严重压力超时后仍直接运行，`--status` 仍显示压力等级。
 - 2026-11-17 agent 会话的 shell 统一降到 nice 10：多个会话同时跑 `tsc`、`go test`、派单时负载冲到 300 多、前台卡顿，名额闸门只管 swift/xcodebuild/go。
 - 2026-11-15 普通派单新增 `--background`：立即返回任务编号，结束（成功、失败、超时）后用 ocs 通知并唤醒发起会话；新增 `aiw bg status|result|list`（#63）。
 - 2026-10-14 新增 `aiw slot` 全机测试名额、内存压力等待、默认 nice +10 和限线程，后台 QoS 可选；全量 harness 自动复用，定向用例隔离名额目录。
