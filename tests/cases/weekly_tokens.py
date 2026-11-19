@@ -32,6 +32,9 @@ def codex_tokens_rollout():
         for seat in ('codex', 'codex-sol'):
             result, row = token_worker(t, f'session id: {sid}\ntokens used\n500\n', seat)
             check(result.returncode == 0 and row['tokens'] == expected and 'tokens_null_reason' not in row, str(row))
+            ref = dict(kind='codex_rollout', id=sid, path=str(path.resolve()))
+            check(row.get('transcript') == ref, row)
+            check(json.loads((Path(row['run_dir']) / 'transcript.json').read_text()) == ref, row)
             # 执行端在 run 目录留 usage.json，转发命令据此把用量带回发起方。
             saved = json.loads((Path(row['run_dir']) / 'usage.json').read_text())
             check(saved == {'tokens': expected}, saved)
@@ -53,6 +56,7 @@ def codex_tokens_rollout():
         path.write_text(event(dict(total_token_usage=dict(input_tokens=1000, total_tokens=1000))) + '\n')
         second.write_text((event(dict(total_token_usage=dict(input_tokens=100, total_tokens=100))) + '\n') * 3)
         result, row = token_worker(t, f'session id: {sid}\n')
+        check(row['transcript']['path'] == str(path.resolve()), row)
         check(row['tokens']['input'] == 1000 and row['tokens']['calls'] == 1, str(row))
 
         # Isolated worker CODEX_HOME rollouts also live under the state directory.
@@ -74,15 +78,19 @@ def codex_tokens_fallback():
         result, row = token_worker(t, stderr)
         check(result.returncode == 0 and row['tokens'] == dict(source='stderr', uncached_plus_output=24324)
               and row['tokens_null_reason'] == 'rollout_missing', str(row))
+        check(row.get('transcript') == dict(kind='codex_rollout', id=sid, path=None), row)
+        check(json.loads((Path(row['run_dir']) / 'transcript.json').read_text()) == row['transcript'], row)
         check(not (Path(row['run_dir']) / 'usage.json').exists(), 'stderr 兜底不回传')
         for err in ('', 'session id: ../../bad\n'):
             result, row = token_worker(t, err)
             check(result.returncode == 0 and row['tokens'] is None and row['tokens_null_reason'] == 'no_session_id', str(row))
+            check('transcript' not in row and not (Path(row['run_dir']) / 'transcript.json').exists(), row)
         path.write_text('{"token_count": broken\n')
         for err in (stderr, f'session id: {sid}\n'):
             result, row = token_worker(t, err)
             check(result.returncode == 0 and row['tokens_null_reason'] == 'rollout_unparsed', str(row))
             check(row['tokens'] == (dict(source='stderr', uncached_plus_output=24324) if err == stderr else None), str(row))
+            check(row['transcript']['path'] == str(path.resolve()), row)
         path.write_bytes(b'{"token_count": \xff}\n')
         result, row = token_worker(t, stderr)
         check(row['tokens'] == dict(source='stderr', uncached_plus_output=24324)
@@ -113,6 +121,9 @@ def codex_tokens_fallback():
         result, row = token_worker(t, f'session id: {sid}\n', script=script)
         check(result.returncode == 124 and row['kind'] == 'timeout' and row['err_tail'] == 'timeout'
               and row['tokens']['source'] == 'rollout' and row['tokens']['input'] == 900, str(row) + result.stderr)
+        ref = dict(kind='codex_rollout', id=sid, path=str(path.resolve()))
+        check(row.get('transcript') == ref, row)
+        check(json.loads((Path(row['run_dir']) / 'transcript.json').read_text()) == ref, row)
 
 
 

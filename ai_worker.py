@@ -716,12 +716,33 @@ def save_json(p: Path, data) -> None:
     tmp.replace(p)
 
 
+def transcript_path(value) -> str | None:
+    """仅接收可安全写入 UTF-8 账本的绝对路径。"""
+    if not isinstance(value, str) or not value or len(value) > 4096 or not os.path.isabs(value):
+        return None
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return value
+
+
+def resolved_transcript_path(path: Path) -> str | None:
+    """路径规范化失败只丢弃引用，不影响用量测量。"""
+    try:
+        return transcript_path(str(path.resolve()))
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def codex_tokens(stderr: str) -> dict:
     """Best-effort measurement only; never change the outcome of an attempt."""
+    fields = {}
     try:
         session = re.search(r"(?m)^session id:[ \t]*([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})[ \t]*$", stderr)
         reason = "no_session_id"
         if session:
+            fields["transcript"] = {"kind": "codex_rollout", "id": session[1], "path": None}
             roots = []
             if os.environ.get("CODEX_HOME"):
                 roots.append(Path(os.environ["CODEX_HOME"]))
@@ -735,6 +756,8 @@ def codex_tokens(stderr: str) -> dict:
                 seen.add(home)
                 paths.extend(sorted(home.glob(f"sessions/*/*/*/rollout-*-{session[1]}.jsonl")))
             reason = "rollout_missing" if not paths else "rollout_unparsed"
+            if paths:
+                fields["transcript"]["path"] = resolved_transcript_path(paths[0])
             best = None
             for path in paths:
                 usage, calls, rank = None, 0, None
@@ -767,14 +790,15 @@ def codex_tokens(stderr: str) -> dict:
                 except (OSError, UnicodeDecodeError):
                     continue
                 if usage is not None and (best is None or rank > best[0]):
-                    best = (rank, usage, calls)
+                    best = (rank, usage, calls, path)
             if best is not None:
-                return {"tokens": {**best[1], "calls": best[2], "source": "rollout"}}
+                fields["transcript"]["path"] = resolved_transcript_path(best[3])
+                return {**fields, "tokens": {**best[1], "calls": best[2], "source": "rollout"}}
         fallback = re.search(r"(?m)^tokens used[ \t]*\n[ \t]*([0-9]+(?:,[0-9]{3})*)[ \t]*$", stderr)
         tokens = {"uncached_plus_output": int(fallback[1].replace(",", "")), "source": "stderr"} if fallback else None
-        return {"tokens": tokens, "tokens_null_reason": reason}
+        return {**fields, "tokens": tokens, "tokens_null_reason": reason}
     except Exception:
-        return {"tokens": None, "tokens_null_reason": "error"}
+        return {**fields, "tokens": None, "tokens_null_reason": "error"}
 
 
 USAGE_FIELDS = ("input", "cached", "cache_write", "output", "reasoning")
@@ -811,11 +835,14 @@ def agent_use_tokens(usage) -> dict:
 def claude_tokens(session: str, config_dir: str | None = None) -> dict:
     """从 claude -p 本次会话的转录（按 --session-id 找，连同 <session>/subagents/ 下子代理的）数 token；
     同一条消息分块重复记的只算一次；任一条缺输入或输出分项就整次未知。"""
+    fields = {"transcript": {"kind": "claude_transcript", "id": session, "path": None}} if session else {}
     try:
         root = Path(config_dir or Path.home() / ".claude").expanduser()
         paths = sorted((root / "projects").glob(f"*/{session}.jsonl"))
         if not paths:
-            return {"tokens": None, "tokens_null_reason": "transcript_missing"}
+            return {**fields, "tokens": None, "tokens_null_reason": "transcript_missing"}
+        if fields:
+            fields["transcript"]["path"] = resolved_transcript_path(paths[0])
         paths = [paths[0], *sorted(paths[0].with_suffix("").glob("subagents/*.jsonl"))]
         messages = {}
         for path in paths:
@@ -832,19 +859,19 @@ def claude_tokens(session: str, config_dir: str | None = None) -> dict:
                     if not isinstance(usage, dict) or not message.get("id") or message.get("model") == "<synthetic>":
                         continue
                     if not all(type(usage.get(k)) is int and usage[k] >= 0 for k in ("input_tokens", "output_tokens")):
-                        return {"tokens": None, "tokens_null_reason": "transcript_unparsed"}
+                        return {**fields, "tokens": None, "tokens_null_reason": "transcript_unparsed"}
                     messages[message["id"]] = usage
         if not messages:
-            return {"tokens": None, "tokens_null_reason": "transcript_unparsed"}
+            return {**fields, "tokens": None, "tokens_null_reason": "transcript_unparsed"}
         n = lambda u, k: u.get(k) if type(u.get(k)) is int and u.get(k) >= 0 else 0
         fresh = sum(n(u, "input_tokens") for u in messages.values())
         cached = sum(n(u, "cache_read_input_tokens") for u in messages.values())
         write = sum(n(u, "cache_creation_input_tokens") for u in messages.values())
-        return {"tokens": {"input": fresh + cached + write, "cached": cached, "cache_write": write,
+        return {**fields, "tokens": {"input": fresh + cached + write, "cached": cached, "cache_write": write,
                            "output": sum(n(u, "output_tokens") for u in messages.values()),
                            "reasoning": 0, "calls": len(messages), "source": "rollout"}}
     except Exception:
-        return {"tokens": None, "tokens_null_reason": "error"}
+        return {**fields, "tokens": None, "tokens_null_reason": "error"}
 
 
 def run_tokens(seat: str, r: dict) -> dict:
@@ -854,7 +881,7 @@ def run_tokens(seat: str, r: dict) -> dict:
     if r.get("token_fields"):
         return r["token_fields"]
     if SEATS["seats"][seat].get("kind") == "agent_use":
-        return agent_use_tokens(r.get("usage"))
+        return {**agent_use_tokens(r.get("usage")), **({"transcript": r["transcript"]} if "transcript" in r else {})}
     if seat_adapter(seat) == "codex":
         return codex_tokens(r["err"])
     if r.get("claude_session"):
@@ -867,6 +894,15 @@ def save_usage(run_dir, tokens) -> None:
     usage = rollout_usage(tokens)
     if run_dir and usage is not None:
         write_run_file(Path(run_dir) / "usage.json", json.dumps({"tokens": usage}, ensure_ascii=False))
+
+
+def save_transcript(run_dir, transcript) -> None:
+    """记录失败不影响派单结果，也不影响用量回传。"""
+    try:
+        if run_dir and transcript is not None:
+            write_run_file(Path(run_dir) / "transcript.json", json.dumps(transcript, ensure_ascii=False))
+    except Exception:
+        pass
 
 
 def ledger(row: dict) -> None:
@@ -2159,6 +2195,9 @@ def run_agent_use_files(cfg, script, task, out_dir, run_dir, workdir, timeout, r
         return {**version_fields, "rc": 1, "out": "", "kind": "incompatible", "secs": secs,
                 "run_dir": str(run_dir) if run_dir is not None else None,
                 "err": f"agent-use 结果 protocol_version={version} 不兼容（期望 1），请对齐 agent-use 与 aiw 版本"}
+    path = transcript_path(att.get("transcript_path"))
+    if path is not None:
+        version_fields["transcript"] = {"kind": "agent_use", "id": None, "path": path}
     base = {**version_fields, "stderr": p.stderr, "credits": att.get("credits"), "usage": att.get("usage"), "model": agent_use_response_model(att), "rc": p.returncode, "err": p.stderr, "secs": secs, "output_saved": output_saved, "run_dir": str(run_dir) if run_dir is not None else None}
     base.update({key: att.get(key) for key in ("selected_model", "actual_model", "requested_model")})
     for model_attempt in att.get("model_attempts") or []:
@@ -2180,6 +2219,8 @@ def run_agent_use_files(cfg, script, task, out_dir, run_dir, workdir, timeout, r
                 "model": agent_use_response_model(att)}
     reason = next((a.get("reason") for a in reversed(attempts) if isinstance(a, dict) and a.get("reason")), None) or status.get("reason") or "unknown"
     kind = AGENT_USE_REASON.get(reason, "timeout" if p.returncode == 124 else "other")
+    if kind == "incompatible":
+        base.pop("transcript", None)
     # pi 可能把请求超限误标为 quota_exhausted；优先看失败诊断，不扫描 prompt 或回答。
     detail = att.get("detail")
     diagnostic = p.stderr + "\n" + (detail if isinstance(detail, str) else "")
@@ -3776,6 +3817,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
                             **({"forward_refused": forward_refused} if forward_refused else {}),
                             **token_fields})
                     save_usage(r.get("run_dir"), token_fields.get("tokens"))
+                    save_transcript(r.get("run_dir"), token_fields.get("transcript"))
                 last_result = r
                 if interruption is not None:
                     raise interruption

@@ -721,11 +721,43 @@ def agent_use_usage():
                 ({}, None, 'not_reported'),
                 (None, None, 'not_reported')):
             fields = {} if usage is None else {'usage': usage}
+            if tokens is not None:
+                fields['transcript_path'] = str(t / 'provider.jsonl')
             result = inprocess_sh(args, env=dict(env, FAKE_ATTEMPT_FIELDS=json.dumps(fields)))
             row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
             check(result.returncode == 0 and row.get('tokens') == tokens and row.get('tokens_null_reason') == reason, (usage, row))
+            ref = dict(kind='agent_use', id=None, path=str(t / 'provider.jsonl'))
+            transcript_file = Path(row['run_dir']) / 'transcript.json'
+            if tokens is not None:
+                check(row.get('transcript') == ref, row)
+                check(json.loads(transcript_file.read_text()) == ref, row)
+            else:
+                check('transcript' not in row and not transcript_file.exists(), row)
             saved = Path(row['run_dir']) / 'usage.json'
             check(saved.exists() == (tokens is not None), f'转发回传只留精确分项: {usage}')
+
+
+        # 引用独立于 usage；非法路径不能让 UTF-8 账本写入失败。
+        for path in (str(t / 'provider.jsonl'), '/' + 'x' * 4095, None, 42, {}, '',
+                     'relative.jsonl', '/x/\ud800.jsonl', '/' + 'x' * 4096):
+            result = inprocess_sh(args, env=dict(env, FAKE_ATTEMPT_FIELDS=json.dumps({'transcript_path': path})))
+            row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+            check(result.returncode == 0 and row['kind'] == 'ok' and row['tokens'] is None
+                  and row['tokens_null_reason'] == 'not_reported', row)
+            saved = Path(row['run_dir']) / 'transcript.json'
+            if path in (str(t / 'provider.jsonl'), '/' + 'x' * 4095):
+                ref = dict(kind='agent_use', id=None, path=path)
+                check(row.get('transcript') == ref and json.loads(saved.read_text()) == ref, row)
+            else:
+                check('transcript' not in row and not saved.exists(), row)
+        for extra in ({'FAKE_STATUS_FIELDS': json.dumps({'protocol_version': 2})},
+                      {'FAKE_AU_PI': 'invalid_protocol'}):
+            result = inprocess_sh(args, env=dict(env, FAKE_ATTEMPT_FIELDS=json.dumps({
+                'transcript_path': str(t / 'provider.jsonl')}), **extra))
+            row = json.loads((state / 'seat-ledger.jsonl').read_text().splitlines()[-1])
+            check(result.returncode == 1 and row['kind'] == 'incompatible', row)
+            check('transcript' not in row and not (Path(row['run_dir']) / 'transcript.json').exists(), row)
+            (state / 'breaker.json').unlink(missing_ok=True)
 
 
 def claude_transcript_usage():
@@ -739,8 +771,37 @@ def claude_transcript_usage():
         (project / "s/subagents").mkdir(parents=True)
         (project / "s.jsonl").write_text(line("m1", 10, 2, 50, 5) + "\n")
         (project / "s/subagents/agent-a.jsonl").write_text(line("a1", 100, 20) + "\n")
+        ref = {"kind": "claude_transcript", "id": "s", "path": str((project / "s.jsonl").resolve())}
+        check(w.claude_tokens("s", td)["transcript"] == ref, ref)
+        alias = Path(td) / "config-alias"
+        alias.symlink_to(Path(td), target_is_directory=True)
+        check(w.claude_tokens("s", str(alias))["transcript"] == ref, ref)
+        for invalid in ('', 'relative.jsonl', '/x/\ud800.jsonl', '/' + 'x' * 4096, None, 42):
+            check(w.transcript_path(invalid) is None, repr(invalid))
+        check(w.transcript_path('/' + 'x' * 4095) == '/' + 'x' * 4095, '4096 字符边界')
+        check(w.claude_tokens("missing", td)["transcript"]["path"] is None, "缺转录仍记编号")
+        check("transcript" not in w.claude_tokens("", td), "无编号省略")
+        w.save_transcript(td, ref)
+        check(json.loads((Path(td) / "transcript.json").read_text()) == ref, ref)
+        w.save_transcript(project / "s.jsonl" / "invalid", ref)
         check(w.claude_tokens("s", td)["tokens"] == {"input": 165, "cached": 50, "cache_write": 5, "output": 22,
                                                     "reasoning": 0, "calls": 2, "source": "rollout"}, "子代理用量应计入")
+    with tempfile.TemporaryDirectory() as td:
+        t = Path(td)
+        prompt = t / 'prompt'; prompt.write_text('Reply OK')
+        args_file = t / 'claude.args'
+        env = dict(os.environ, PATH=str(fake_bins(t)) + os.pathsep + os.environ['PATH'],
+                   AIW_STATE=str(t / 'state'), CLAUDE_CONFIG_DIR=str(t / 'claude-home'),
+                   FAKE_CLAUDE_ARGS=str(args_file), FAKE_CLAUDE_USAGE=line('m1', 10, 2))
+        result = inprocess_sh([sys.executable, str(REPO / 'ai_worker.py'), 'claude', str(t),
+                               '10', str(prompt), '--ro', '--no-fallback'], env=env)
+        row = json.loads((t / 'state/seat-ledger.jsonl').read_text().splitlines()[-1])
+        sid = args_file.read_text().splitlines()[1]
+        ref = dict(kind='claude_transcript', id=sid,
+                   path=str((t / 'claude-home/projects/p' / (sid + '.jsonl')).resolve()))
+        check(result.returncode == 0 and row.get('transcript') == ref, (row, result.stderr))
+        check(json.loads((Path(row['run_dir']) / 'transcript.json').read_text()) == ref, row)
+        check(row['tokens']['input'] == 10 and row['tokens']['output'] == 2, row)
     tokens = w.agent_use_tokens({"input_tokens": 10, "cache_read_tokens": 5, "cache_write_tokens": 7, "output_tokens": 2})["tokens"]
     check(tokens["input"] == 15 and tokens["cache_write"] == 7, tokens)
 
