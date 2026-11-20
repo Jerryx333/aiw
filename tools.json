@@ -89,6 +89,46 @@
     },
     "agent-use": {
       "kind": "agent_use"
+    },
+    "pi": {
+      "kind": "cli",
+      "bin": "pi",
+      "bin_env": "PI_BIN",
+      "model_args": [
+        "--model",
+        "{model}"
+      ],
+      "argv_rw": [
+        "{bin}",
+        "-p",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-approve",
+        "--tools",
+        "read,bash,edit,write,grep,find,ls",
+        "--",
+        "{prompt}"
+      ],
+      "argv_ro": [
+        "{bin}",
+        "-p",
+        "--no-session",
+        "--no-extensions",
+        "--no-skills",
+        "--no-prompt-templates",
+        "--no-themes",
+        "--no-approve",
+        "--tools",
+        "read,grep,find,ls",
+        "--",
+        "{prompt}"
+      ],
+      "version_args": [
+        "--version"
+      ]
     }
   }
 }

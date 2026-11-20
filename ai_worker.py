@@ -407,6 +407,35 @@ def prepare_api_codex_home() -> Path:
     return home
 
 
+PI_PROVIDER = "aiw"
+PI_READONLY_TOOLS = {"read", "grep", "find", "ls"}
+
+
+def prepare_api_pi_home(seat: str, api: dict, model: str) -> Path:
+    """中转账号的 pi 用座位自己的配置目录（PI_CODING_AGENT_DIR）：只放这个账号的供应商，
+    不读不写用户的 ~/.pi；密钥由 pi 每次运行取密钥命令现取，不进环境、命令行或文件。"""
+    name = hashlib.sha256(seat.encode()).hexdigest()[:16]
+    home = (STATE / "pi-home" / name).resolve()
+    home.mkdir(mode=0o700, parents=True, exist_ok=True)
+    home.chmod(0o700)
+    models = {"providers": {PI_PROVIDER: {
+        "baseUrl": api["base_url"], "api": "openai-completions",
+        "apiKey": "!" + shlex.join(api["key_command"]),
+        "models": [{"id": model}]}}}
+    target = home / "models.json"
+    fd, tmp = tempfile.mkstemp(dir=home, prefix=".models-", suffix=".json")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(models, handle, ensure_ascii=False)
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, target)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp)
+        raise
+    return home
+
+
 def claude_account_settings(api: dict, model: str) -> dict:
     """照 pal claudeApiSettings：apiKeyHelper 取密钥，外面的 ANTHROPIC_* 置空，别名都指向座位模型。"""
     small = api.get("small_model") or model
@@ -452,6 +481,16 @@ def apply_account(seat: str, argv: list[str], env: dict) -> str | None:
     api = account["api"]
     command = [str(Path(api["key_command"][0]).expanduser()), *api["key_command"][1:]]
     api = dict(api, key_command=command)
+    if agent == "pi":
+        if not cfg.get("model"):
+            return f"座位 {seat} 用 pi 跑中转账号要写模型（model）"
+        try:
+            home = prepare_api_pi_home(seat, api, cfg["model"])
+        except OSError as error:
+            return f"座位 {seat} 准备 pi 配置目录失败（{type(error).__name__}）"
+        env["PI_CODING_AGENT_DIR"] = str(home)
+        argv[1:1] = ["--provider", PI_PROVIDER]
+        return None
     if agent == "codex":
         try:
             home = prepare_api_codex_home()
@@ -2579,6 +2618,19 @@ def readonly_argv_error(seat, argv, prompt=None, deny_write=None):
         if any(a in ("-s", "--full-auto", "--dangerously-bypass-approvals-and-sandbox")
                or a.startswith(("--sandbox=", "sandbox_mode=")) for a in options):
             return "只读任务不得覆盖 Codex read-only 沙箱"
+    elif seat_agent(SEATS['seats'][seat]) == 'pi':
+        # pi 没有 OS 沙箱：只读靠工具白名单，必须恰好一个 --tools 且只含只读工具。
+        flags = [i for i, arg in enumerate(options) if arg == "--" or arg in ("--tools", "-t") or arg.startswith("--tools=")]
+        tools = [i for i in flags if options[i] != "--"]
+        end = next((i for i in flags if options[i] == "--"), len(options))
+        if len(tools) != 1 or tools[0] > end:
+            return "只读任务要求 pi 恰好一个 --tools 只读工具清单"
+        arg = options[tools[0]]
+        value = arg.partition("=")[2] if "=" in arg else (options[tools[0] + 1] if tools[0] + 1 < len(options) else "")
+        if not value or not set(value.split(",")) <= PI_READONLY_TOOLS:
+            return "只读任务的 pi 只能用 read、grep、find、ls 工具"
+        if any(a in ("--no-tools", "-nt", "--extension", "-e", "--approve", "-a") for a in options[:end]):
+            return "只读任务的 pi 不得加载扩展或信任项目配置"
     else:
         if seat_agent(SEATS['seats'][seat]) == 'claude':
             options = argv[:-1] if prompt is not None and argv[-2:] == ['--', prompt] else argv

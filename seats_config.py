@@ -51,7 +51,7 @@ def merge(public, local):
 
 
 def seat_agent(seat):
-    """Which CLI an account applies to: 'codex', 'claude' or None."""
+    """Which CLI an account applies to: 'codex', 'claude', 'pi' or None."""
     if not isinstance(seat, dict) or seat.get('kind') != 'cli':
         return None
     if seat.get('adapter') == 'codex':
@@ -59,6 +59,8 @@ def seat_agent(seat):
     binary = seat.get('bin')
     if seat.get('bin_env') == 'CLAUDE_BIN' or (isinstance(binary, str) and Path(binary).name == 'claude'):
         return 'claude'
+    if seat.get('bin_env') == 'PI_BIN' or (isinstance(binary, str) and Path(binary).name == 'pi'):
+        return 'pi'
     return None
 
 
@@ -91,7 +93,7 @@ def account_errors(seat, path):
     if extra:
         errors.append(f'{path} 有未知字段：{"、".join(sorted(extra))}（只允许 base_url、key_command、small_model）')
     if agent is None:
-        errors.append(f'{path} 中转账号只用于 Codex（adapter: codex）或 Claude 座位')
+        errors.append(f'{path} 中转账号只用于 Codex（adapter: codex）、Claude 或 pi 座位')
     url = api.get('base_url')
     try:
         host = urlsplit(url).hostname if isinstance(url, str) else None

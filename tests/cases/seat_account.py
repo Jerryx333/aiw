@@ -35,6 +35,10 @@ for i, a in enumerate(args):
         helper = json.loads(args[i + 1]).get('apiKeyHelper')
         if helper:
             key = subprocess.run(['/bin/sh', '-c', helper], capture_output=True, text=True).stdout.strip()
+pi_dir = os.environ.get('PI_CODING_AGENT_DIR')
+if pi_dir:
+    provider = json.load(open(os.path.join(pi_dir, 'models.json')))['providers']['aiw']
+    key = subprocess.run(['/bin/sh', '-c', provider['apiKey'][1:]], capture_output=True, text=True).stdout.strip()
 with open(os.environ['FAKE_RECORD'], 'w') as f:
     json.dump({{'argv': args, 'env': dict(os.environ), 'key_ok': key == {key!r}}}, f)
 print('fake ok')
@@ -313,6 +317,57 @@ def account_absent_unchanged():
             (root / 'record.json').unlink()
 
 
+PI_COMMON = ['{bin}', '-p', '--no-session', '--no-extensions', '--no-approve']
+
+
+def pi_seat(account, model='deepseek-chat', ro_tools='read,grep,find,ls'):
+    return {'kind': 'cli', 'bin': 'pi', 'bin_env': 'PI_BIN', 'model': model, 'model_args': ['--model', '{model}'],
+            'argv_rw': PI_COMMON + ['--tools', 'read,bash,edit,write', '--', '{prompt}'],
+            'argv_ro': PI_COMMON + ['--tools', ro_tools, '--', '{prompt}'], 'version_args': ['--version'], 'account': account}
+
+
+def account_pi_relay():
+    """pi on a relay: its own config directory with only this account's provider; the key is fetched by pi, never stored."""
+    import seats_config as config
+    public = config.load_public(REPO)
+    for tools in ('read,grep,find,ls', 'read,bash'):
+        merged = config.merge(public, {'seats': {'p': pi_seat({'api': {'base_url': RELAY, 'key_command': ['/k']}}, ro_tools=tools)}})
+        check(config.validate(merged) == [], f'pi 中转座位被拒：{config.validate(merged)}')
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        account = lambda k: {'api': {'base_url': RELAY, 'key_command': [str(k), 'relay', "it's"]}}
+        env, pf, wd, keytool = setup(root, {})
+        pi_home = root / '.pi' / 'agent'; pi_home.mkdir(parents=True)
+        (pi_home / 'models.json').write_text('{"providers": {}}')
+        before = (pi_home / 'models.json').read_text()
+        local = {'seats': {'pi-ds': pi_seat(account(keytool)), 'pi-nomodel': pi_seat(account(keytool), model=''),
+                           'pi-badro': pi_seat(account(keytool), ro_tools='read,bash')}}
+        Path(env['AIW_CONFIG']).write_text(json.dumps(local))
+        env['PI_BIN'] = env['CLAUDE_BIN']
+        for ro in (True, False):
+            r = dispatch(env, pf, wd, 'pi-ds', ro)
+            rec = record(root)
+            check(r.returncode == 0 and rec and rec['key_ok'], f'pi ro={ro}: {r.stderr}')
+            argv, child = rec['argv'], rec['env']
+            check(argv[argv.index('--provider') + 1] == 'aiw' and argv[argv.index('--model') + 1] == 'deepseek-chat',
+                  f'pi 参数错误：{argv}')
+            check(argv[argv.index('--tools') + 1] == ('read,grep,find,ls' if ro else 'read,bash,edit,write'), f'pi 工具清单错误：{argv}')
+            home = Path(child['PI_CODING_AGENT_DIR'])
+            check(home.is_relative_to((root / 'state').resolve()) and oct(home.stat().st_mode & 0o777) == '0o700', 'pi 配置目录不在 state 或权限不对')
+            provider = json.loads((home / 'models.json').read_text())['providers']['aiw']
+            check(provider['baseUrl'] == RELAY and provider['models'] == [{'id': 'deepseek-chat'}] and str(keytool) in provider['apiKey'],
+                  f'pi 供应商配置错误：{provider}')
+            check(oct((home / 'models.json').stat().st_mode & 0o777) == '0o600', 'models.json 权限应为 600')
+            no_key_anywhere(root, r.stdout, r.stderr)
+            (root / 'record.json').unlink()
+        check((pi_home / 'models.json').read_text() == before, '不应改用户自己的 ~/.pi')
+        r = dispatch(env, pf, wd, 'pi-nomodel')
+        check(r.returncode == 1 and record(root) is None and '要写模型' in r.stderr, f'没写模型应报账号错误：{r.stderr}')
+        r = dispatch(env, pf, wd, 'pi-badro')
+        check(r.returncode != 0 and record(root) is None and 'pi 只能用 read、grep、find、ls' in r.stderr,
+              f'只读任务带 bash 应被拒：{r.stderr}')
+
+
 CASES = {case.__name__: case for case in (
     account_validation,
     account_base_seat,
@@ -323,4 +378,5 @@ CASES = {case.__name__: case for case in (
     account_key_program_missing,
     account_doctor,
     account_absent_unchanged,
+    account_pi_relay,
 )}
