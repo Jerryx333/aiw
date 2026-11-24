@@ -48,9 +48,15 @@ def fingerprint(row, home):
         account['codex_home'] = path(account['codex_home'])
     if account.get('api', {}).get('key_command'):
         account['api']['key_command'][0] = path(account['api']['key_command'][0])
-    # Generated default effort/model use empty strings; legacy absence means the same.
-    value.setdefault('effort', '')
+    # 按实际生效的推理强度算（和 build_argv 一致）：没写强度时有模型按 low；Heya 生成的行
+    # （带 agent_pick）写空表示交给工具默认，不带 --effort。两者执行不同，摘要也必须不同（#1332）。
     value.setdefault('model', '')
+    effort = row.get('effort')
+    if effort is None:
+        effort = 'low' if row.get('model') else ''
+    if effort == '' and row.get('agent_pick') and row.get('model'):
+        effort = '<cli-default>'
+    value['effort'] = effort
     return digest(value)
 
 
@@ -124,11 +130,18 @@ def resolve(config, request, home):
                 or entry['name'] in mapping or entry['mode'] not in ('rw', 'ro', 'text')
                 or not isinstance(entry['digest'], str) or not re.fullmatch('[0-9a-f]{64}', entry['digest'])):
             raise ValueError('agent-forward-invalid-entry')
-        candidates = [name for name, row in config['seats'].items()
-                      if eligible(row, mode, entry['mode']) and matches(row, home, entry['digest'])]
+        seats = config['seats']
+        if entry.get('exact') and entry['name'] in seats:
+            # 点名座位在执行端有同名行：只认这一行，对不上就拒，不再找别名（停用的同名行
+            # 不能因内容变了而改借别名，#1047）。
+            row = seats[entry['name']]
+            candidates = [entry['name']] if eligible(row, mode, entry['mode']) and matches(row, home, entry['digest']) else []
+        else:
+            candidates = [name for name, row in seats.items()
+                          if eligible(row, mode, entry['mode']) and matches(row, home, entry['digest'])]
         if entry['name'] in candidates:
             candidates = [entry['name']]
-        elif entry.get('exact') or len(candidates) != 1:
+        elif entry.get('exact'):
             # 两台的座位名由各自的账号叫法算出（同一个订阅这台叫 claude、那台叫 main），
             # 名字对不上不代表不是同一个座位。只认执行内容相同、权限档也相同的那一行：
             # 同一座位按可写/只读/只出文字各生成一行，权限档相同的只有一行（#1332）。

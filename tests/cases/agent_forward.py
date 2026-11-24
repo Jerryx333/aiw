@@ -132,6 +132,31 @@ def forwarding_named_seat_matches_same_recipe_same_mode_across_names():
             pass
 
 
+def forwarding_digest_tracks_effective_effort_and_same_name_first():
+    """评审 #1332：强度写空（工具默认）和没写（按 low）执行不同，摘要须不同；
+    点名座位在执行端有同名行时只认它，不因内容变了改借别名。"""
+    from agent_forward import fingerprint
+    base = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm', 'force_mode': 'ro'}
+    generated = dict(base, effort='', agent_pick='a/b:m')
+    check(fingerprint(generated, '/a') != fingerprint(base, '/a'), 'cli default equals implicit low')
+    check(fingerprint(base, '/a') == fingerprint(dict(base, effort='low'), '/a'), 'implicit low differs from explicit low')
+    check(fingerprint(dict(base, effort='high'), '/a') == fingerprint(dict(base, effort='high', agent_pick='x'), '/a'), 'explicit effort depends on pick')
+    request = describe({'seats': {'src': base}}, ['src'], 'ro', '/a', exact={'src'})
+    try:
+        resolve({'seats': {'src': dict(base, model='changed', disabled=True), 'dst': base}}, request, '/b')
+        check(False, 'same-name row bypassed through alias')
+    except ValueError:
+        pass
+    check(resolve({'seats': {'dst': base}}, request, '/b') == {'src': 'dst'}, 'cross-name same mode rejected')
+    # 角色链（非点名）多候选不再筛权限档，维持原来的拒绝。
+    loose = describe({'seats': {'r': base}}, ['r'], 'ro', '/a')
+    try:
+        resolve({'seats': {'x': base, 'y': dict(base, force_mode='rw')}}, loose, '/b')
+        check(False, 'role chain narrowed by mode')
+    except ValueError:
+        pass
+
+
 def runnable_lists_digests_per_requested_mode():
     from agent_forward import runnable
     base = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm'}
@@ -147,7 +172,8 @@ def runnable_lists_digests_per_requested_mode():
 
 CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names,
                                  forwarding_named_seat_matches_same_recipe_same_mode_across_names,
-                                 runnable_lists_digests_per_requested_mode, forwarding_identity_rejects_ambiguity_and_write_relaxation,
+                                 runnable_lists_digests_per_requested_mode,
+                                 forwarding_digest_tracks_effective_effort_and_same_name_first, forwarding_identity_rejects_ambiguity_and_write_relaxation,
                                  forwarding_named_seat_requires_the_same_name,
                                  forwarding_runs_here_when_it_cannot_carry_the_request,
                                  resolve_entry_returns_66_only_for_missing_equivalent)}
