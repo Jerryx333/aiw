@@ -136,8 +136,12 @@ def forwarding_digest_tracks_effective_effort_and_same_name_first():
     """评审 #1332：强度写空（工具默认）和没写（按 low）执行不同，摘要须不同；
     点名座位在执行端有同名行时只认它，不因内容变了改借别名。"""
     from agent_forward import fingerprint
-    base = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm', 'force_mode': 'ro'}
+    base = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm', 'force_mode': 'ro',
+            'model_args': ['-m', '{model}', '--effort', '{effort}']}
     generated = dict(base, effort='', agent_pick='a/b:m')
+    check(fingerprint(generated, '/a') != fingerprint(dict(base, effort='<cli-default>'), '/a'), 'marker collides with a literal')
+    plain = {k: v for k, v in base.items() if k != 'model_args'}
+    check(fingerprint(dict(plain, effort='high'), '/a') == fingerprint(plain, '/a'), 'unused effort changes digest')
     check(fingerprint(generated, '/a') != fingerprint(base, '/a'), 'cli default equals implicit low')
     check(fingerprint(base, '/a') == fingerprint(dict(base, effort='low'), '/a'), 'implicit low differs from explicit low')
     check(fingerprint(dict(base, effort='high'), '/a') == fingerprint(dict(base, effort='high', agent_pick='x'), '/a'), 'explicit effort depends on pick')
@@ -148,6 +152,12 @@ def forwarding_digest_tracks_effective_effort_and_same_name_first():
     except ValueError:
         pass
     check(resolve({'seats': {'dst': base}}, request, '/b') == {'src': 'dst'}, 'cross-name same mode rejected')
+    try:
+        resolve({'seats': {'src': dict(base, model='changed', disabled=True), 'dst': base}},
+                describe({'seats': {'src': base}}, ['src'], 'ro', '/a'), '/b')
+        check(False, 'role chain bypassed same-name row through alias')
+    except ValueError:
+        pass
     # 角色链（非点名）多候选不再筛权限档，维持原来的拒绝。
     loose = describe({'seats': {'r': base}}, ['r'], 'ro', '/a')
     try:

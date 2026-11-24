@@ -51,11 +51,16 @@ def fingerprint(row, home):
     # 按实际生效的推理强度算（和 build_argv 一致）：没写强度时有模型按 low；Heya 生成的行
     # （带 agent_pick）写空表示交给工具默认，不带 --effort。两者执行不同，摘要也必须不同（#1332）。
     value.setdefault('model', '')
+    # 只有命令行真会带上强度（有模型、参数里有 {effort}）时强度才算数，否则记空。
+    # 「交给工具默认」记成列表，不会和任何真实强度字符串撞上（复核 #1332）。
+    uses = bool(row.get('model')) and any('{effort}' in str(a) for a in row.get('model_args') or [])
     effort = row.get('effort')
-    if effort is None:
-        effort = 'low' if row.get('model') else ''
-    if effort == '' and row.get('agent_pick') and row.get('model'):
-        effort = '<cli-default>'
+    if not uses:
+        effort = ''
+    elif effort is None:
+        effort = 'low'
+    elif effort == '' and row.get('agent_pick'):
+        effort = ['cli-default']
     value['effort'] = effort
     return digest(value)
 
@@ -131,9 +136,9 @@ def resolve(config, request, home):
                 or not isinstance(entry['digest'], str) or not re.fullmatch('[0-9a-f]{64}', entry['digest'])):
             raise ValueError('agent-forward-invalid-entry')
         seats = config['seats']
-        if entry.get('exact') and entry['name'] in seats:
-            # 点名座位在执行端有同名行：只认这一行，对不上就拒，不再找别名（停用的同名行
-            # 不能因内容变了而改借别名，#1047）。
+        if entry['name'] in seats:
+            # 执行端有同名行：只认这一行，对不上就拒，不再找别名（停用的同名行不能因内容
+            # 变了而改借别名，#1047；点名和角色链一样，复核 #1332）。
             row = seats[entry['name']]
             candidates = [entry['name']] if eligible(row, mode, entry['mode']) and matches(row, home, entry['digest']) else []
         else:
