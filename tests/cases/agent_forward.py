@@ -113,7 +113,41 @@ def resolve_entry_returns_66_only_for_missing_equivalent():
         check(r.returncode == 64, r)
 
 
-CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names, forwarding_identity_rejects_ambiguity_and_write_relaxation,
+def forwarding_named_seat_matches_same_recipe_same_mode_across_names():
+    """#1332：两台账号叫法不同，同一座位名字不同；内容和权限档都相同的那一行可以接。"""
+    base = {'kind': 'cli', 'bin': 'claude', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm', 'effort': 'medium'}
+    rows = lambda prefix: {f'{prefix}-{m}': dict(base, force_mode=m) for m in ('rw', 'ro', 'text')}
+    sender, receiver = rows('here'), rows('there')
+    for m in ('rw', 'ro', 'text'):
+        request = describe({'seats': sender}, [f'here-{m}'], m, '/a', exact={f'here-{m}'})
+        check(resolve({'seats': receiver}, request, '/b') == {f'here-{m}': f'there-{m}'}, m)
+    request = describe({'seats': sender}, ['here-ro'], 'ro', '/a', exact={'here-ro'})
+    for seats in ({'there-rw': receiver['there-rw'], 'there-text': receiver['there-text']},
+                  {'there-ro': dict(receiver['there-ro'], model='other')},
+                  {'there-ro': receiver['there-ro'], 'twin-ro': receiver['there-ro']}):
+        try:
+            resolve({'seats': seats}, request, '/b')
+            check(False, f'wrong mode/recipe or ambiguous accepted: {sorted(seats)}')
+        except ValueError:
+            pass
+
+
+def runnable_lists_digests_per_requested_mode():
+    from agent_forward import runnable
+    base = {'kind': 'cli', 'bin': 'tool', 'argv_rw': ['w'], 'argv_ro': ['r'], 'model': 'm'}
+    seats = {'a-rw': dict(base, force_mode='rw'), 'a-ro': dict(base, force_mode='ro'),
+             'gone': dict(base, model='x', local_only=True), 'w-only': {'kind': 'cli', 'bin': 't', 'argv_rw': ['w']}}
+    got = runnable({'seats': seats}, '/a')
+    digest = describe({'seats': seats}, ['a-ro'], 'ro', '/a')['entries'][0]['digest'][:16]
+    check(digest in got['ro'] and digest in got['text'] and digest in got['rw'], got)
+    wonly = describe({'seats': seats}, ['w-only'], 'rw', '/a')['entries'][0]['digest'][:16]
+    check(wonly in got['rw'] and wonly not in got['ro'], got)
+    check(len(set(got['rw'])) == 2, got)
+
+
+CASES = {f.__name__: f for f in (forwarding_identity_preserves_account_model_and_names,
+                                 forwarding_named_seat_matches_same_recipe_same_mode_across_names,
+                                 runnable_lists_digests_per_requested_mode, forwarding_identity_rejects_ambiguity_and_write_relaxation,
                                  forwarding_named_seat_requires_the_same_name,
                                  forwarding_runs_here_when_it_cannot_carry_the_request,
                                  resolve_entry_returns_66_only_for_missing_equivalent)}
