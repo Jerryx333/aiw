@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 import collections
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock
 import hashlib
 import itertools
 import json
@@ -603,7 +603,7 @@ def _acquire_lock(lock, seconds):
     deadline = time.monotonic() + seconds
     while True:
         try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_lock(lock, blocking=False)
             return True
         except BlockingIOError:
             if time.monotonic() >= deadline:

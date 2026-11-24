@@ -3,7 +3,7 @@
 from __future__ import annotations
 import collections
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock
 import json
 import math
 import os
@@ -41,7 +41,7 @@ def read(path, default=None):
 def append(path, rows):
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open('a+b') as stream:
-        fcntl.flock(stream, fcntl.LOCK_EX)
+        acquire_lock(stream)
         f.complete_line(stream)
         for row in rows:
             stream.write((json.dumps(row, ensure_ascii=False) + '\n').encode('utf-8'))
@@ -166,7 +166,7 @@ def start(days=60):
     folder().mkdir(parents=True, exist_ok=True)
     # Serialize lease checks and state mutations with the records append lock.
     with (folder() / 'records.lock').open('a') as guard:
-        fcntl.flock(guard, fcntl.LOCK_EX)
+        acquire_lock(guard)
         old = read(folder() / 'triage.lock', {})
         expires = f._timestamp(old.get('expires'))
         if old and (expires is None or expires > stamp):
@@ -322,7 +322,7 @@ def apply(data):
         print('本批 batch.json 缺失或损坏，请先 aiw triage abort 再重新 start', file=sys.stderr)
         return 2
     with (folder() / 'records.lock').open('a') as guard:
-        fcntl.flock(guard, fcntl.LOCK_EX)
+        acquire_lock(guard)
         require_lock(lock)
         hypotheses = read(folder() / 'hypotheses.json', {})
         errors = validate(data, batch, hypotheses)
@@ -353,7 +353,7 @@ def abort():
         return 64
     path, lock = current
     with (folder() / 'records.lock').open('a') as guard:
-        fcntl.flock(guard, fcntl.LOCK_EX)
+        acquire_lock(guard)
         require_lock(lock)
         (folder() / 'triage.lock').unlink()
         path.unlink()

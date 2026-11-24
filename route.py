@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock
 import json
 import os
 from env_compat import getenv, write_tui_session
@@ -142,7 +142,7 @@ def context_hint(payload: dict) -> tuple[int | None, str]:
         directory.mkdir(parents=True, exist_ok=True)
         with (directory / f".{session}.lock").open("a") as lock:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquire_lock(lock, blocking=False)
             except BlockingIOError:
                 return ctx, ""
             marker = directory / session

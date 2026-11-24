@@ -12,7 +12,7 @@ verify 只看产物和退出码，不看模型说「做完了」。
 from __future__ import annotations
 
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock, release_lock
 import hashlib
 import json
 import shlex
@@ -59,14 +59,14 @@ class goal_lock:
     def __enter__(self):
         self.fh = self.path.open("a")
         try:
-            fcntl.flock(self.fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_lock(self.fh, blocking=False)
         except BlockingIOError:
             self.fh.close()
             raise
         return self
 
     def __exit__(self, *exc):
-        fcntl.flock(self.fh, fcntl.LOCK_UN)
+        release_lock(self.fh)
         self.fh.close()
 
 

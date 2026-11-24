@@ -24,10 +24,12 @@
 """
 from __future__ import annotations
 
+from platform_process import dispatch_unavailable
+
 import collections
 import dataclasses
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock
 import hashlib
 import json
 import os
@@ -245,7 +247,7 @@ class Store:
     def lock(self) -> bool:
         self.lock_fh = (self.root / "lock").open("a")
         try:
-            fcntl.flock(self.lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_lock(self.lock_fh, blocking=False)
             return True
         except BlockingIOError:
             self.lock_fh.close()
@@ -522,6 +524,8 @@ class Scheduler:
 
 
 def cmd_run(args: list[str]) -> int:
+    if dispatch_unavailable():
+        return 64
     resume = None
     if "--resume" in args:
         at = args.index("--resume")

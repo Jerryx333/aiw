@@ -19,7 +19,6 @@ PROTECTED = (*PRIVATE, 'Library/LaunchAgents', 'Library/LaunchDaemons',
              '.config/autostart', '.local/bin', '.claude', '.codex', '.config/aiw',
              '.zshrc', '.zshenv', '.zprofile', '.bashrc', '.bash_profile', '.profile')
 MAX_BYTES = 2 * 1024 ** 3
-DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
 
 def validate_parts(parts):
@@ -55,7 +54,8 @@ def validate_target(raw: str) -> Path:
 @contextlib.contextmanager
 def directory(path: Path, create=False, journal=None):
     """从根目录逐段打开，避免校验后软链替换重定向文件写入。"""
-    fd = os.open(path.anchor, DIR_FLAGS)
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(path.anchor, flags)
     try:
         for name in path.parts[1:]:
             if create:
@@ -64,7 +64,7 @@ def directory(path: Path, create=False, journal=None):
                     remember(journal, fd, name, True)
                 except FileExistsError:
                     pass
-            child = os.open(name, DIR_FLAGS, dir_fd=fd)
+            child = os.open(name, flags, dir_fd=fd)
             os.close(fd)
             fd = child
         yield fd
@@ -74,6 +74,7 @@ def directory(path: Path, create=False, journal=None):
 
 @contextlib.contextmanager
 def subdirectory(root_fd, parts, create=False, journal=None):
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     fd = os.dup(root_fd)
     try:
         for name in parts:
@@ -83,7 +84,7 @@ def subdirectory(root_fd, parts, create=False, journal=None):
                     remember(journal, fd, name, True)
                 except FileExistsError:
                     pass
-            child = os.open(name, DIR_FLAGS, dir_fd=fd)
+            child = os.open(name, flags, dir_fd=fd)
             os.close(fd)
             fd = child
         yield fd

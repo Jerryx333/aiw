@@ -9,6 +9,8 @@ prompt_file 写 - 时从标准输入读 prompt。默认座位由 map_default 配
 """
 from __future__ import annotations
 
+from platform_process import dispatch_unavailable
+
 import concurrent.futures as cf
 import datetime as dt
 import json
@@ -107,6 +109,8 @@ def ask(item: tuple[int, str], seat: str, workdir: str, timeout: str,
 
 
 def main() -> int:
+    if dispatch_unavailable():
+        return 64
     if os.environ.get("AIW_NESTED") == "1":
         argv = sys.argv
         try:

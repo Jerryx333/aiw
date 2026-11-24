@@ -22,6 +22,8 @@
 """
 from __future__ import annotations
 
+from platform_process import dispatch_unavailable, kill_tree, popen_kwargs
+
 import findings
 import structured
 from delivery import deliver_files, validate_target
@@ -32,7 +34,7 @@ import contextlib
 import ctypes
 import errno as errno_module
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock, release_lock
 import hashlib
 import json
 import os
@@ -88,6 +90,25 @@ NO_WORK = STATE / "no-work-streak.json"
 DAILY = STATE / "daily-count.json"
 # 转发协议：执行端确认点名座位在本机不可用、且没有起任何进程时返回 66。
 RECEIVER_SEAT_UNAVAILABLE = 66
+
+
+def windows_cli_exit() -> int | None:
+    if sys.platform == "win32":
+        if sys.argv[1:] in ([], ["help"], ["-h"], ["--help"]):
+            print(__doc__)
+            return 0
+        if sys.argv[1:2] not in (["doctor"], ["enable"]):
+            dispatch_unavailable()
+            return 64
+    return None
+
+
+if __name__ == "__main__":
+    exit_code = windows_cli_exit()
+    if exit_code is not None:
+        raise SystemExit(exit_code)
+
+
 from seats_config import ConfigError, load_seats, load_public, forward_command, forward_runs_here, account_kind, seat_agent
 try:
     SEATS = load_seats(HERE)
@@ -567,10 +588,13 @@ import time
 # Only aiw owns the pipe writer; EOF without acknowledgement means it died.
 if sys.stdin.buffer.read(1) == b"x":
     sys.exit(0)
+sys.path.insert(0, sys.argv[3])
+from platform_process import kill_tree
+
 pgid = int(sys.argv[1])
 def send(sig):
     try:
-        os.killpg(pgid, sig)
+        kill_tree(pgid, sig)
     except (ProcessLookupError, PermissionError):
         return False
     return True
@@ -597,7 +621,7 @@ def stop_group(p):
     """先给整组清理机会，再兜底杀掉仍存活的孙进程。"""
     # macOS 上进程组只剩僵尸时 killpg 报 EPERM。
     try:
-        os.killpg(p.pid, signal.SIGTERM)
+        kill_tree(p.pid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         pass
     try:
@@ -608,7 +632,7 @@ def stop_group(p):
         print(f"警告：子进程收尾读取失败（{type(e).__name__}）", file=sys.stderr)
     finally:
         try:
-            os.killpg(p.pid, signal.SIGKILL)
+            kill_tree(p.pid, signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
     try:
@@ -681,16 +705,16 @@ def run_group(argv, timeout: float, **kw) -> subprocess.CompletedProcess:
     try:
         try:
             with deferred_signals():
-                p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, start_new_session=True, **kw)
+                p = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, **popen_kwargs(), **kw)
                 ACTIVE_PROCESS = p
                 try:
                     # os.pipe descriptors are non-inheritable; only the read end
                     # is explicitly duplicated to the watchdog's stdin.
                     reader, writer = os.pipe()
                     watchdog = subprocess.Popen(
-                        [sys.executable, "-c", WATCHDOG_CODE, str(p.pid), str(WATCHDOG_GRACE)],
+                        [sys.executable, "-c", WATCHDOG_CODE, str(p.pid), str(WATCHDOG_GRACE), str(HERE)],
                         stdin=reader, stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL, start_new_session=True,
+                        stderr=subprocess.DEVNULL, **popen_kwargs(),
                         close_fds=True)
                 except Exception as error:
                     print(f"警告：执行方看门狗启动失败（{type(error).__name__}）", file=sys.stderr)
@@ -743,9 +767,9 @@ class state_lock:
     def __enter__(self):
         STATE.mkdir(parents=True, exist_ok=True)
         self.f = (STATE / ".state.lock").open("w")
-        fcntl.flock(self.f, fcntl.LOCK_EX)
+        acquire_lock(self.f)
     def __exit__(self, *a):
-        fcntl.flock(self.f, fcntl.LOCK_UN); self.f.close()
+        release_lock(self.f); self.f.close()
 
 
 def save_json(p: Path, data) -> None:
@@ -1765,7 +1789,7 @@ def _run_verification(commands, workdir, timeout, run_dir):
             with subprocess.Popen(["bash", "-c", command], cwd=workdir,
                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   text=True, encoding="utf-8", errors="replace",
-                                  start_new_session=True, preexec_fn=lower_verify_priority) as proc:
+                                  **popen_kwargs(preexec_fn=lower_verify_priority)) as proc:
                 try:
                     with interruptible_signals():
                         output, _ = proc.communicate(timeout=timeout)
@@ -1861,7 +1885,7 @@ def create_task_worktree(workdir: str, run_dir: Path):
                 "base_head": head, "created_at": dt.datetime.now(dt.timezone.utc).isoformat()}
     lock_path = STATE / ("lock-" + hashlib.sha1(str(path).encode()).hexdigest()[:12])
     with lock_path.open("a") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquire_lock(lock, blocking=False)
         atomic_write_bytes(path.parent / (path.name + ".json"), json.dumps(metadata, ensure_ascii=False).encode())
         worktree_git(root, "worktree", "add", "-b", branch, str(path), head)
         clone_ignored(root, path)
@@ -2039,7 +2063,7 @@ def _sweep_worktrees(days, dry_run, *, now, exclude, state, output):
                 lock = lock_path.open("a")
             with lock:
                 try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquire_lock(lock, blocking=False)
                 except BlockingIOError:
                     report(f"跳过 {path}：写锁正在使用")
                     continue
@@ -3067,7 +3091,7 @@ def acquire_liveness_lock(path: Path):
             path.parent.mkdir(parents=True, exist_ok=True)
             lock = path.open("a")
             # 保持 Python 描述符不可继承，以及 Popen 的 close_fds 默认值。
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_lock(lock, blocking=False)
             return lock
         except OSError as e:
             failure = e
@@ -3083,6 +3107,9 @@ def acquire_liveness_lock(path: Path):
 
 
 def main() -> int:
+    exit_code = windows_cli_exit()
+    if exit_code is not None:
+        return exit_code
     if sys.argv[1:2] == ["doctor"]:
         return dispatch(None, {})
     inflight = STATE / "inflight" / f"{os.getpid()}.json"
@@ -3445,6 +3472,8 @@ def reserve_write_slot(stack, seat, workdir):
 
 
 def dispatch(inflight: Path | None, attempt: dict, *, before_execute=None) -> int:
+    if sys.argv[1:2] not in (["doctor"], ["enable"]) and dispatch_unavailable():
+        return 64
     with contextlib.ExitStack() as stack:
         try:
             return _dispatch(inflight, attempt, before_execute=before_execute, stack=stack)
@@ -3679,7 +3708,7 @@ def _dispatch(inflight: Path | None, attempt: dict, *, before_execute=None, stac
     with lock_path.open("w") as lock:
         if not ro:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquire_lock(lock, blocking=False)
             except BlockingIOError:
                 print(f"另一个座位正在写 {workdir}，要并行请各开一个 worktree", file=sys.stderr)
                 return 75

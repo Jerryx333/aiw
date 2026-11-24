@@ -52,6 +52,7 @@ CASE_MODULES = (
     "structured_flow",
     "seat_account",
     "background",
+    "platform_compat",
 )
 CASES = {}
 MODULE_CASES = {}

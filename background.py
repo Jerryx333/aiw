@@ -16,7 +16,9 @@ pi-1a2b3c4d），不用可改名的名字，切到别的会话也不会投错。
 """
 from __future__ import annotations
 
-import fcntl
+from platform_process import dispatch_unavailable, popen_kwargs
+
+from platform_lock import acquire_lock
 import json
 import os
 import secrets
@@ -70,7 +72,7 @@ def supervised(path: Path) -> bool:
     except FileNotFoundError:
         return False
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquire_lock(fd, blocking=False)
     except BlockingIOError:
         return True
     finally:
@@ -106,6 +108,8 @@ def resolve_address() -> tuple[str | None, str]:
 
 
 def start(argv: list[str]) -> int:
+    if dispatch_unavailable():
+        return 64
     if os.environ.get("AIW_NESTED") == "1":
         print("[aiw bg] 已在被外包的会话里，不能后台派单（执行方不得联系或唤醒其它会话）", file=sys.stderr)
         return 64
@@ -167,10 +171,10 @@ def start(argv: list[str]) -> int:
     # 先在这里拿锁再交给监工，status 从第一刻起就判得出活着，没有「刚启动误报 lost」的空档。
     lock = os.open(path / "supervisor.lock", os.O_RDWR | os.O_CREAT, 0o600)
     try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquire_lock(lock, blocking=False)
         with (path / "supervisor.log").open("ab") as log:
             sup = subprocess.Popen([sys.executable, "-B", str(Path(__file__).resolve()), "supervise", job_id, str(lock)],
-                                   start_new_session=True, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                                   **popen_kwargs(), stdin=subprocess.DEVNULL, stdout=log, stderr=log,
                                    pass_fds=(lock,), cwd=os.getcwd())
     finally:
         os.close(lock)
@@ -221,6 +225,8 @@ def send_notice(path: Path, job: dict) -> None:
 
 
 def supervise(job_id: str, lock_fd: str) -> int:
+    if dispatch_unavailable():
+        return 64
     """只由 start 拉起：必须带着 start 交来的、已锁住的 supervisor.lock。"""
     if os.environ.get("AIW_NESTED") == "1":
         return 64

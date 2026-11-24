@@ -401,11 +401,11 @@ def ledger(row):
     return original_ledger(row)
 w.ledger = ledger
 if mode == 'lock':
-    original_flock = w.fcntl.flock
-    def flock(fd, flags):
-        if flags & w.fcntl.LOCK_NB: raise OSError('模拟拿锁失败')
-        return original_flock(fd, flags)
-    w.fcntl.flock = flock
+    original_acquire_lock = w.acquire_lock
+    def acquire_lock(fd, *, blocking=True):
+        if not blocking: raise OSError('模拟拿锁失败')
+        return original_acquire_lock(fd, blocking=blocking)
+    w.acquire_lock = acquire_lock
     original_unlink = Path.unlink
     def unlink(path, *a, **kw):
         if path.suffix == '.lock': raise OSError('模拟删除失败')
@@ -502,7 +502,7 @@ def errand_fixture(t):
 def errand_route_test(runtime):
     with tempfile.TemporaryDirectory() as td:
         t = Path(td); env = errand_fixture(t)
-        for name in ('route.py', 'ai_worker.py', 'findings.py', 'harness_ids.py', 'gitenv.py', 'env_compat.py', 'seats_config.py', 'seats.json'):
+        for name in ('route.py', 'platform_lock.py', 'ai_worker.py', 'findings.py', 'harness_ids.py', 'gitenv.py', 'env_compat.py', 'seats_config.py', 'seats.json'):
             shutil.copy(REPO / name, t / name)
         rule = {'id': 'errand-test', 'seat': 'cue', 'patterns': ['跑腿'], 'instruction': '执行任务'}
         for update in ({'seat': 'cue'}, {'seat': 'future-errand'},

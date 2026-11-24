@@ -183,7 +183,7 @@ finally:
                 with patch.object(w, 'WATCHDOG_GRACE', 0.3):
                     watchdog = subprocess.Popen(
                         [sys.executable, '-c', w.WATCHDOG_CODE,
-                         str(executor.pid), str(w.WATCHDOG_GRACE)],
+                         str(executor.pid), str(w.WATCHDOG_GRACE), str(w.HERE)],
                         stdin=reader, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 os.close(reader)
                 reader = None
@@ -241,7 +241,7 @@ def inflight_liveness_lock():
                     raise AssertionError("重建锁未被持有")
         finally:
             held.close()
-        with patch.object(worker.fcntl, "flock", side_effect=OSError("模拟拿锁失败")):
+        with patch.object(worker, "acquire_lock", side_effect=OSError("模拟拿锁失败")):
             check(worker.acquire_liveness_lock(stale) is None, "拿锁失败应返回 None")
         check(not stale.exists(), "拿锁失败留下假锁文件")
 

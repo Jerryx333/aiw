@@ -23,6 +23,8 @@ summary.json 的 sufficient 表示成功家数是否达到 required（固定为 
 """
 from __future__ import annotations
 
+from platform_process import dispatch_unavailable
+
 import concurrent.futures as cf
 import datetime as dt
 import hashlib
@@ -91,6 +93,8 @@ def ask(seat: str, workdir: str, timeout: str, prompt_file: str, out: Path, full
 
 
 def main() -> int:
+    if dispatch_unavailable():
+        return 64
     sys.path.insert(0, str(HERE))
     from ai_worker import read_stdin_prompt, split_argv, read_attachments, render_attachments, warn_large_attachments, AttachError, agent_use_workspace, main_agent, disabled_seat, print_disabled, errand_names, StateError
     try:

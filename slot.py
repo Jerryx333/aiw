@@ -3,10 +3,12 @@
 # 依赖：Python 3.11+ 标准库、POSIX flock；macOS 可选 taskpolicy。
 from __future__ import annotations
 
+from platform_process import popen_kwargs, kill_tree
+
 import argparse
 from contextlib import contextmanager
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock
 import json
 import math
 import os
@@ -78,7 +80,7 @@ def holders(directory, pool="slot"):
     for path in sorted(directory.glob(f"{pool}-*.json")):
         with open_lock(path.with_suffix(".lock")) as lock:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                acquire_lock(lock, blocking=False)
             except BlockingIOError:
                 try:
                     data = json.loads(path.read_text(encoding="utf-8"))
@@ -133,7 +135,7 @@ def reservation(command, slots=None, max_wait=900, label="", pool="slot"):
             for index in range(slots):
                 candidate = open_lock(directory / f"{pool}-{index}.lock")
                 try:
-                    fcntl.flock(candidate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    acquire_lock(candidate, blocking=False)
                 except BlockingIOError:
                     candidate.close()
                     continue
@@ -263,7 +265,7 @@ def run(command, **options):
                 raise SystemExit(128 + signum)
             return
         try:
-            os.killpg(child.pid, signum)
+            kill_tree(child.pid, signum)
         except ProcessLookupError:
             pass
 
@@ -274,7 +276,7 @@ def run(command, **options):
             prefix = qos()
             launching = True
             try:
-                child = subprocess.Popen(prefix + command, start_new_session=True, env=env)
+                child = subprocess.Popen(prefix + command, **popen_kwargs(), env=env)
             except OSError as error:
                 warn(f"启动命令失败：{error}")
                 return 127 if isinstance(error, FileNotFoundError) else 126

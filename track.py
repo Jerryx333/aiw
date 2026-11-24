@@ -3,9 +3,11 @@
 # 依赖：Python 3.11+ 标准库，POSIX flock 和进程组。
 from __future__ import annotations
 
+from platform_process import popen_kwargs, kill_tree
+
 import argparse
 import datetime as dt
-import fcntl
+from platform_lock import acquire_lock
 import json
 import math
 import os
@@ -51,7 +53,7 @@ def acquire_liveness_lock(path):
             path.parent.mkdir(parents=True, exist_ok=True)
             lock = path.open("a")
             os.set_inheritable(lock.fileno(), False)
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_lock(lock, blocking=False)
             return lock
         except OSError as error:
             failure = error
@@ -166,7 +168,7 @@ def main(argv=None):
             pending.append(signum)
         else:
             try:
-                os.killpg(child.pid, signum)
+                kill_tree(child.pid, signum)
             except ProcessLookupError:
                 pass
 
@@ -188,7 +190,7 @@ def main(argv=None):
             warn("锁不可用且无法删除，本次不发布状态")
         try:
             child = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                     start_new_session=True, close_fds=True)
+                                     **popen_kwargs(), close_fds=True)
         except OSError as error:
             warn(f"启动命令失败：{error}")
             return 127 if isinstance(error, FileNotFoundError) else 126
