@@ -141,7 +141,8 @@ def forwarding_digest_tracks_effective_effort_and_same_name_first():
     generated = dict(base, effort='', agent_pick='a/b:m')
     check(fingerprint(generated, '/a') != fingerprint(dict(base, effort='<cli-default>'), '/a'), 'marker collides with a literal')
     plain = {k: v for k, v in base.items() if k != 'model_args'}
-    check(fingerprint(dict(plain, effort='high'), '/a') == fingerprint(plain, '/a'), 'unused effort changes digest')
+    check(fingerprint(dict(plain, effort='high'), '/a') != fingerprint(dict(plain, effort='low'), '/a'),
+          'effort outside model_args ignored (Claude Code passes it via settings)')
     check(fingerprint(generated, '/a') != fingerprint(base, '/a'), 'cli default equals implicit low')
     check(fingerprint(base, '/a') == fingerprint(dict(base, effort='low'), '/a'), 'implicit low differs from explicit low')
     check(fingerprint(dict(base, effort='high'), '/a') == fingerprint(dict(base, effort='high', agent_pick='x'), '/a'), 'explicit effort depends on pick')

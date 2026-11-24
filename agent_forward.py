@@ -51,15 +51,13 @@ def fingerprint(row, home):
     # 按实际生效的推理强度算（和 build_argv 一致）：没写强度时有模型按 low；Heya 生成的行
     # （带 agent_pick）写空表示交给工具默认，不带 --effort。两者执行不同，摘要也必须不同（#1332）。
     value.setdefault('model', '')
-    # 只有命令行真会带上强度（有模型、参数里有 {effort}）时强度才算数，否则记空。
+    # 强度一律计入：它不只经 model_args 的 {effort} 生效（Claude Code 写进 settings 参数），
+    # 宁可多拒也不能把不同强度认成同一个座位。没写强度且有模型按 low（同 build_argv）；
     # 「交给工具默认」记成列表，不会和任何真实强度字符串撞上（复核 #1332）。
-    uses = bool(row.get('model')) and any('{effort}' in str(a) for a in row.get('model_args') or [])
     effort = row.get('effort')
-    if not uses:
-        effort = ''
-    elif effort is None:
-        effort = 'low'
-    elif effort == '' and row.get('agent_pick'):
+    if effort is None:
+        effort = 'low' if row.get('model') else ''
+    elif effort == '' and row.get('agent_pick') and row.get('model'):
         effort = ['cli-default']
     value['effort'] = effort
     return digest(value)
