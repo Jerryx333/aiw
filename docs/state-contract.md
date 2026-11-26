@@ -8,7 +8,7 @@ UserPromptSubmit 钩子保存该会话上次上下文提醒的 bucket（十进�
 
 ## handoffs/<YYYYmmdd-HHMMSS>-<项目名>.md
 
-`aiw handoff --path` 创建 handoffs 目录并打印建议路径，不创建文件。项目名取工作目录最后一段，非 ASCII 字母数字替换为 `-`。主会话经用户同意后写入 Markdown 交接内容，`aiw handoff <文件>` 校验后在 Orca 打开新 Claude 会话；此目录保存交接材料，不由展示端修改。
+`aiw handoff --path` 创建 handoffs 目录并打印建议路径，不创建文件。项目名取工作目录最后一段，非 ASCII 字母数字替换为 `-`。主会话经用户同意后写入 Markdown 交接内容，`aiw handoff <文件>` 校验后打印文件绝对路径，并提示在新会话中读取文件继续；此目录保存交接材料，不由展示端修改。
 
 ## router-log.jsonl
 

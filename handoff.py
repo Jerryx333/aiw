@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
-"""交接文件校验与 Orca 新会话入口，仅使用标准库。"""
+"""校验交接文件并打印绝对路径，仅使用标准库。"""
 from __future__ import annotations
 
 import argparse
 import datetime as dt
-import json
 import os
 from env_compat import getenv
 from pathlib import Path
 import re
-import shlex
-import shutil
-import subprocess
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -42,10 +38,9 @@ def main() -> int:
     mode.add_argument("--path", action="store_true")
     parser.add_argument("file", nargs="?")
     parser.add_argument("--workdir", default=os.getcwd())
-    parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
-    if (args.template or args.path) and (args.file or args.dry_run):
-        parser.error("--template / --path 不能与交接文件或 --dry-run 同用")
+    if (args.template or args.path) and args.file:
+        parser.error("--template / --path 不能与交接文件同用")
     if not (args.template or args.path or args.file):
         parser.error("请提供交接文件、--template 或 --path")
     workdir = Path(args.workdir).expanduser().resolve()
@@ -55,8 +50,8 @@ def main() -> int:
     if args.template:
         print("\n\n".join(f"## {name}\n{description}" for name, description in SECTIONS.items()))
         return 0
-    project = re.sub(r"[^A-Za-z0-9]", "-", workdir.name) or "project"
     if args.path:
+        project = re.sub(r"[^A-Za-z0-9]", "-", workdir.name) or "project"
         try:
             directory = STATE / "handoffs"
             directory.mkdir(parents=True, exist_ok=True)
@@ -88,35 +83,8 @@ def main() -> int:
     if missing:
         print("交接文件缺少小节：" + "、".join("## " + name for name in missing), file=sys.stderr)
         return 1
-    prompt = f"读交接文件 {file}，先核对现状，再按「下一步」继续。"
-    command = "claude " + shlex.quote(prompt)
-    orca = os.environ.get("AIW_ORCA_BIN") or shutil.which("orca")
-    if not orca:
-        installed = Path("/Applications/Orca.app/Contents/Resources/bin/orca")
-        if installed.is_file() and os.access(installed, os.X_OK):
-            orca = str(installed)
-    argv = [orca or "orca", "terminal", "create", "--worktree", f"path:{workdir}",
-            "--title", f"接续·{project}", "--command", command, "--focus", "--json"]
-    if args.dry_run:
-        print(json.dumps(argv, ensure_ascii=False))
-        return 0
-    reason = "找不到 Orca CLI"
-    if orca:
-        try:
-            result = subprocess.run(argv, capture_output=True, text=True, timeout=20)
-            if result.returncode == 0:
-                print("已在 Orca 新开会话")
-                if result.stdout.strip():
-                    print(result.stdout.strip())
-                print("旧会话可以关掉。")
-                return 0
-            reason = f"Orca 返回 {result.returncode}：{result.stderr.strip() or result.stdout.strip()}"
-        except subprocess.TimeoutExpired:
-            reason = "Orca 超时（20 秒）"
-        except (OSError, UnicodeError) as error:
-            reason = f"Orca 启动失败：{error}"
-    print(f"{reason}；可复制运行：")
-    print(f"cd {shlex.quote(str(workdir))} && {command}")
+    print(file)
+    print("请在新会话中读取此文件，核对现状后按「下一步」继续。")
     return 0
 
 

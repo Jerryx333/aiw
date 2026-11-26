@@ -780,7 +780,6 @@ def route_cross_session():
 
 def handoff_cli():
     import re
-    import shlex
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         home, env = fake_home(root)
@@ -790,15 +789,6 @@ def handoff_cli():
         file = workdir / "handoff file's.md"
         required = ['目标', '现状', '已定决策', '下一步', '相关文件']
         file.write_text('\n\n'.join('## ' + s + '\nfixture' for s in required))
-        orca = root / 'fakebin/orca'
-        argv_file = root / 'argv.json'
-        orca.write_text('#!' + sys.executable + '\nimport json, os, sys\n'
-                        'from pathlib import Path\n'
-                        'Path(os.environ["FAKE_ORCA_ARGV"]).write_text(json.dumps(sys.argv[1:]))\n'
-                        'print("{\\"terminal\\": \\"fixture-terminal\\"}")\n'
-                        'sys.exit(int(os.environ.get("FAKE_ORCA_RC", "0")))\n')
-        orca.chmod(0o755)
-        env.update(AIW_ORCA_BIN=str(orca), FAKE_ORCA_ARGV=str(argv_file))
         def run(*args, override=None):
             return sh([str(harness / 'bin/aiw'), 'handoff', *map(str, args)],
                       env=dict(env, **(override or {})), cwd=workdir)
@@ -822,24 +812,13 @@ def handoff_cli():
         check(run(broken).returncode == 1, '空文件未拒绝')
         check(run(root / 'missing.md').returncode == 1, '不存在文件未拒绝')
         check(run(file, '--workdir', root / 'missing').returncode == 1, '不存在目录未拒绝')
-        result = run(file, '--workdir', workdir)
-        prompt = f'读交接文件 {file.resolve()}，先核对现状，再按「下一步」继续。'
-        expected = ['terminal', 'create', '--worktree', 'path:' + str(workdir.resolve()),
-                    '--title', '接续·demo-project-s', '--command', 'claude ' + shlex.quote(prompt), '--focus', '--json']
-        check(result.returncode == 0 and '已在 Orca 新开会话' in result.stdout and
-              'fixture-terminal' in result.stdout and '旧会话可以关掉' in result.stdout, repr(result))
-        check(json.loads(argv_file.read_text()) == expected, argv_file.read_text())
-        result = run(file, override={'FAKE_ORCA_RC': '3'})
-        check(result.returncode == 0 and 'Orca 返回 3' in result.stdout, repr(result))
-        fallback = result.stdout.splitlines()[-1]
-        check(shlex.split(fallback) == ['cd', str(workdir.resolve()), '&&', 'claude', prompt], fallback)
-        argv_file.unlink()
-        result = run(file, '--dry-run')
-        check(result.returncode == 0 and json.loads(result.stdout) == [str(orca), *expected] and
-              not argv_file.exists(), repr(result))
-        result = run(file, override={'AIW_ORCA_BIN': str(root / 'missing-orca')})
-        check(result.returncode == 0 and 'Orca 启动失败' in result.stdout and
-              shlex.split(result.stdout.splitlines()[-1]) == ['cd', str(workdir.resolve()), '&&', 'claude', prompt], repr(result))
+        result = run(file.name, '--workdir', workdir)
+        check(result.returncode == 0 and not result.stderr and
+              result.stdout.splitlines() == [
+                  str(file.resolve()),
+                  '请在新会话中读取此文件，核对现状后按「下一步」继续。',
+              ], repr(result))
+        check(run(file, '--dry-run').returncode == 64, '已移除的参数仍被接受')
         check(run(file, override={'AIW_NESTED': '1'}).returncode == 64, '执行方可开会话')
         check(run(file, '--unknown').returncode == 64, '未知参数退出码错误')
 

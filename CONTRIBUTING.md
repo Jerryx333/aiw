@@ -46,7 +46,7 @@ Every root Python, Shell and configuration/rule file:
 | [slot.py](slot.py) | Machine-wide test slots, memory pressure waiting and background QoS. |
 | [tui.py](tui.py) | `aiw tui`: start a Codex main session in tmux whose status bar shows this session's assignments via aiw-board. |
 | [snapshot.py](snapshot.py) | Generate local configuration-shape snapshots without credentials to compare drift. |
-| [handoff.py](handoff.py) | Generate handoff templates/paths, validate handoffs and invoke Orca for a new session. |
+| [handoff.py](handoff.py) | Generate handoff templates and suggested paths, and validate and print the handoff file path for use in a new session. |
 | [freecheck.py](freecheck.py) | Probe free seats serially, record disabling and manage scheduled macOS checks. |
 | [gc.py](gc.py) | Clean old run/panel/batch and dated Codex session archives; support dry-run. |
 | [harness_ids.py](harness_ids.py) | Shared run, record and panel ID formatting/recognition. |

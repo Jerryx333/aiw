@@ -46,7 +46,7 @@ AIW_CONFIG=.tmp-baseline/dev-seats.json AIW_STATE=.tmp-baseline/dev-state python
 | [slot.py](slot.py) | 全机测试名额、内存压力等待及后台 QoS。 |
 | [tui.py](tui.py) | `aiw tui`：在 tmux 里启动 Codex 主会话，底栏通过 aiw-board 显示本会话派单摘要。 |
 | [snapshot.py](snapshot.py) | 生成不含凭据的本机配置形状快照，检查漂移。 |
-| [handoff.py](handoff.py) | 生成交接模板与建议路径、校验交接内容并调用 Orca 开新会话。 |
+| [handoff.py](handoff.py) | 生成交接模板与建议路径，校验交接文件并打印绝对路径，供新会话读取。 |
 | [freecheck.py](freecheck.py) | 串行探测免费座位、记录停用并管理 macOS 定时检查。 |
 | [gc.py](gc.py) | 清理旧运行/会诊/批处理及 Codex 日期会话归档，支持预览。 |
 | [harness_ids.py](harness_ids.py) | 统一运行、记录与会诊 ID 的格式和识别。 |
