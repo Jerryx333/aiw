@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""校验交接文件并打印绝对路径，仅使用标准库。"""
+"""校验交接文件并打印接续命令，仅使用标准库。"""
 from __future__ import annotations
 
 import argparse
@@ -8,6 +8,7 @@ import os
 from env_compat import getenv
 from pathlib import Path
 import re
+import shlex
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -38,9 +39,10 @@ def main() -> int:
     mode.add_argument("--path", action="store_true")
     parser.add_argument("file", nargs="?")
     parser.add_argument("--workdir", default=os.getcwd())
+    parser.add_argument("--dry-run", action="store_true", help="已无作用，仅为兼容旧脚本")
     args = parser.parse_args()
-    if (args.template or args.path) and args.file:
-        parser.error("--template / --path 不能与交接文件同用")
+    if (args.template or args.path) and (args.file or args.dry_run):
+        parser.error("--template / --path 不能与交接文件或 --dry-run 同用")
     if not (args.template or args.path or args.file):
         parser.error("请提供交接文件、--template 或 --path")
     workdir = Path(args.workdir).expanduser().resolve()
@@ -85,6 +87,9 @@ def main() -> int:
         return 1
     print(file)
     print("请在新会话中读取此文件，核对现状后按「下一步」继续。")
+    prompt = f"读交接文件 {file}，先核对现状，再按「下一步」继续。"
+    command = "claude " + shlex.quote(prompt)
+    print(f"cd {shlex.quote(str(workdir))} && {command}")
     return 0
 
 

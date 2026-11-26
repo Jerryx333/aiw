@@ -86,12 +86,12 @@ aiw doctor
 ```bash
 aiw handoff --template
 aiw handoff --path [--workdir DIR]
-aiw handoff <交接文件> [--workdir DIR]
+aiw handoff <交接文件> [--workdir DIR] [--dry-run]
 ```
 
 `--template` 打印目标、现状、已定决策、下一步、相关文件、注意事项六节；前五节必需，注意事项可选。`--path` 创建 STATE/handoffs 并打印建议文件路径，交接内容由主会话写入。工作目录默认当前目录，必须存在；交接文件必须存在且非空。`AIW_NESTED=1` 的执行方禁止使用此命令（退出码 64）。
 
-校验通过后，命令打印交接文件的绝对路径，并提示在新会话中读取此文件，核对现状后按「下一步」继续。
+校验通过后，命令打印交接文件的绝对路径，并提示在新会话中读取此文件，核对现状后按「下一步」继续，并打印一行可复制运行的 `cd … && claude …` 命令。`--dry-run` 仅用于兼容旧脚本，和省略它的行为相同。它与 `--template` 或 `--path` 同用时返回 64。
 
 安装脚本默认在 `~/.claude/settings.json` 顶层没有 `autoCompactWindow`、且环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW` 未设置时写入 `"autoCompactWindow": 400000`；已有值不改，`AIW_NO_AUTOCOMPACT=1` 可跳过，`--minimal` 不改此文件。也可自行设置环境变量 `CLAUDE_CODE_AUTO_COMPACT_WINDOW=400000`，会话到约 40 万 token 时由 Claude Code 自动压缩。这是 [Claude Code 官方设置](https://code.claude.com/docs/en/model-config#set-the-auto-compact-window)，与交接提醒独立；同一件事继续即可，全交给 Claude Code 自动压缩。Claude Code 默认还有闲置压缩：会话闲置且上下文超过约 20 万 token 时自动压缩，阈值由 `CLAUDE_CODE_IDLE_COMPACT_MIN_TOKENS` 控制（默认 `200000`），可用 `idleCompaction` 设置关闭，能避免大上下文缓存过期后整段重写，见[官方环境变量文档](https://code.claude.com/docs/en/env-vars)。
 

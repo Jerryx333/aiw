@@ -780,6 +780,7 @@ def route_cross_session():
 
 def handoff_cli():
     import re
+    import shlex
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         home, env = fake_home(root)
@@ -813,12 +814,27 @@ def handoff_cli():
         check(run(root / 'missing.md').returncode == 1, '不存在文件未拒绝')
         check(run(file, '--workdir', root / 'missing').returncode == 1, '不存在目录未拒绝')
         result = run(file.name, '--workdir', workdir)
-        check(result.returncode == 0 and not result.stderr and
-              result.stdout.splitlines() == [
+        lines = result.stdout.splitlines()
+        check(result.returncode == 0 and not result.stderr and len(lines) == 3 and
+              lines[:2] == [
                   str(file.resolve()),
                   '请在新会话中读取此文件，核对现状后按「下一步」继续。',
               ], repr(result))
-        check(run(file, '--dry-run').returncode == 64, '已移除的参数仍被接受')
+        check(shlex.split(lines[2]) == [
+            'cd', str(workdir.resolve()), '&&', 'claude',
+            f'读交接文件 {file.resolve()}，先核对现状，再按「下一步」继续。',
+        ], lines[2])
+        dry_run = run(file.name, '--workdir', workdir, '--dry-run')
+        check((dry_run.returncode, dry_run.stdout, dry_run.stderr) ==
+              (result.returncode, result.stdout, result.stderr), repr(dry_run))
+        for mode in ('--template', '--path'):
+            for incompatible in (file, '--dry-run'):
+                invalid = run(mode, incompatible)
+                check(invalid.returncode == 64 and
+                      '--template / --path 不能与交接文件或 --dry-run 同用' in invalid.stderr, repr(invalid))
+        help_result = run('--help')
+        check(help_result.returncode == 0 and '已无作用，仅为兼容旧脚本' in help_result.stdout,
+              repr(help_result))
         check(run(file, override={'AIW_NESTED': '1'}).returncode == 64, '执行方可开会话')
         check(run(file, '--unknown').returncode == 64, '未知参数退出码错误')
 
