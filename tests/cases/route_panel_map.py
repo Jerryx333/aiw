@@ -229,6 +229,10 @@ def map_batch():
         check(summary['items'][1]['provider'] is None, '失败不应伪报实际执行方')
         r, out, summary = run(changes={'FAKE_MAP_FAIL': 'workbuddy'})
         check(r.returncode == 0 and summary['items'][1]['provider'] == 'qoder', '正常顶替链未保留')
+        # 两轮注入失败与成功并发落账，先后不定时 workbuddy 可能累计两次没开工而熔断；
+        # 那是正确行为，但会让后面的用例全部顶替到 qoder（CI 偶发失败），这里清掉。
+        for name in ('breaker.json', 'no-work-streak.json'):
+            (t / 'state' / name).unlink(missing_ok=True)
 
         (wd / '.env').write_text('fake test data')
         (t / 'outside.txt').write_text('outside')
