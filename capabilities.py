@@ -12,5 +12,15 @@ def capabilities():
                          'flags': ['--ro', '--text', '--worktree', '--net', '--no-net', '--no-fallback', '--no-findings', '--allow-nested', '--require-no-tools',
                                    '--background', '--no-notify']}}
 
+def platform_capabilities(value=None, platform=None):
+    """Windows has no background jobs, --deliver or --verify yet; do not advertise them there."""
+    value = capabilities() if value is None else value
+    if (platform or sys.platform) != 'win32':
+        return value
+    value['capabilities'] = [c for c in value['capabilities'] if c not in ('background-notify-v1', 'scratch-delivery-v1')]
+    value['dispatch']['values'] = [v for v in value['dispatch']['values'] if v not in ('--deliver', '--verify', '--verify-timeout')]
+    value['dispatch']['flags'] = [f for f in value['dispatch']['flags'] if f not in ('--background', '--no-notify')]
+    return value
+
 if __name__ == '__main__':
-    print(json.dumps(capabilities(), ensure_ascii=False))
+    print(json.dumps(platform_capabilities(), ensure_ascii=False))

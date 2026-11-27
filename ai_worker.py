@@ -22,7 +22,7 @@
 """
 from __future__ import annotations
 
-from platform_process import dispatch_unavailable, kill_tree, popen_kwargs
+from platform_process import SIGKILL, kill_tree, popen_kwargs, signals_blocked
 
 import findings
 import structured
@@ -93,13 +93,10 @@ RECEIVER_SEAT_UNAVAILABLE = 66
 
 
 def windows_cli_exit() -> int | None:
-    if sys.platform == "win32":
-        if sys.argv[1:] in ([], ["help"], ["-h"], ["--help"]):
-            print(__doc__)
-            return 0
-        if sys.argv[1:2] not in (["doctor"], ["enable"]):
-            dispatch_unavailable()
-            return 64
+    # bin/aiw.cmd sends help here; the bash entry point prints its own usage.
+    if sys.platform == "win32" and sys.argv[1:] in ([], ["help"], ["-h"], ["--help"]):
+        print(__doc__)
+        return 0
     return None
 
 
@@ -292,6 +289,9 @@ def scratch_environment(scratch, *, cache_write=False) -> dict:
     scratch = Path(scratch)
     env = {'AIW_SCRATCH': str(scratch), 'TMPDIR': str(scratch),
            'GOTMPDIR': str(scratch / 'go-tmp')}
+    if sys.platform == 'win32':
+        # Windows programs read TEMP/TMP, not TMPDIR.
+        env.update(TEMP=str(scratch), TMP=str(scratch))
     if cache_write:
         # 仅 workspace-write 重定向缓存。Go 明确支持多进程共享；其它缓存
         # 未对所有受支持版本保证并发安全，按单隔离并在执行结束后清理。
@@ -314,6 +314,26 @@ def cleanup_scratch(scratch: Path) -> None:
     """只清本单临时内容；保留 deliver 供后续交付和核对，不跟随软链。"""
     from delivery import directory
     if not scratch.exists() and not scratch.is_symlink():
+        return
+    if sys.platform == 'win32':
+        # No dir_fd on Windows. Refuse a scratch that is itself a link; rmtree removes
+        # junctions and symlinks inside without following them.
+        if scratch.is_symlink() or getattr(scratch, 'is_junction', lambda: False)() or not scratch.is_dir():
+            return
+        for entry in os.scandir(scratch):
+            if entry.name == 'deliver':
+                continue
+            if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
+                shutil.rmtree(entry.path)
+            elif entry.is_dir():
+                # A directory link: remove the link, not its target. Windows removes directory
+                # symlinks and junctions with rmdir; elsewhere a symlink is unlinked.
+                try:
+                    os.rmdir(entry.path)
+                except NotADirectoryError:
+                    os.unlink(entry.path)
+            else:
+                os.unlink(entry.path)
         return
     with directory(scratch) as fd:
         for name in os.listdir(fd):
@@ -589,7 +609,7 @@ import time
 if sys.stdin.buffer.read(1) == b"x":
     sys.exit(0)
 sys.path.insert(0, sys.argv[3])
-from platform_process import kill_tree
+from platform_process import SIGKILL, kill_tree
 
 pgid = int(sys.argv[1])
 def send(sig):
@@ -604,7 +624,7 @@ if send(signal.SIGTERM):
         if not send(0):
             sys.exit(0)
         time.sleep(0.05)
-    send(signal.SIGKILL)
+    send(SIGKILL)
 """
 DEFERRED_DEPTH = 0
 PENDING_SIGNAL = None
@@ -632,7 +652,7 @@ def stop_group(p):
         print(f"警告：子进程收尾读取失败（{type(e).__name__}）", file=sys.stderr)
     finally:
         try:
-            kill_tree(p.pid, signal.SIGKILL)
+            kill_tree(p.pid, SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
     try:
@@ -664,21 +684,15 @@ def interruptible_signals():
     global DEFERRED_DEPTH, PENDING_SIGNAL
     depth = DEFERRED_DEPTH
     try:
-        mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
-        try:
+        with signals_blocked():
             DEFERRED_DEPTH = 0
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
         if PENDING_SIGNAL is not None:
             code, PENDING_SIGNAL = PENDING_SIGNAL, None
             raise RunInterrupted(code)
         yield
     finally:
-        mask = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGINT, signal.SIGTERM})
-        try:
+        with signals_blocked():
             DEFERRED_DEPTH = depth
-        finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
 
 
 def interrupted(signum, frame):
@@ -2518,8 +2532,10 @@ def run_seat(seat: str, prompt: str, workdir: str, timeout: int, ro: bool, effor
         scratch.mkdir(parents=True, mode=0o700, exist_ok=False)
         created = True
         for key, value in scratch_environment(scratch, cache_write=scratch_writable).items():
-            if key not in ('AIW_SCRATCH', 'TMPDIR'):
-                if key == 'GOCACHE':
+            if key not in ('AIW_SCRATCH', 'TMPDIR', 'TEMP', 'TMP'):
+                if key == 'GOCACHE' and sys.platform == 'win32':
+                    Path(value).mkdir(parents=True, exist_ok=True)
+                elif key == 'GOCACHE':
                     from delivery import directory
                     with directory(Path(value), create=True):
                         pass
@@ -2939,6 +2955,8 @@ def split_argv(argv: list[str], allowed: set[str], *, values: dict | None = None
             value = next(it, None)
             if value is None or value.startswith('--'):
                 raise AttachError('--deliver 后面缺目标绝对目录')
+            if sys.platform == 'win32':
+                raise AttachError('Windows 暂不支持 --deliver')
             try:
                 validate_target(value)
             except (ValueError, OSError, RuntimeError) as error:
@@ -2952,6 +2970,8 @@ def split_argv(argv: list[str], allowed: set[str], *, values: dict | None = None
                 raise AttachError("--prior 后面缺文件路径")
             values["prior"] = v
         elif a == "--verify":
+            if sys.platform == "win32":
+                raise AttachError("Windows 暂不支持 --verify（验收命令要 bash）")
             v = next(it, None)
             if v is None or v.startswith("--") or not v.strip():
                 raise AttachError("--verify 后面缺验收命令或命令为空")
@@ -3049,7 +3069,8 @@ def snapshot_attachments(run_dir: Path, files: list[tuple[str, bytes]]) -> list[
         directory.mkdir(mode=0o700)
         path = directory / Path(rel).name
         with path.open("xb") as stream:
-            os.fchmod(stream.fileno(), 0o600)
+            if hasattr(os, "fchmod"):  # Windows: the run directory's ACL applies.
+                os.fchmod(stream.fileno(), 0o600)
             stream.write(data)
         snapshots.append((str(path), data))
     return snapshots
@@ -3137,6 +3158,10 @@ def main() -> int:
             inflight.unlink(missing_ok=True)
         except OSError as e:
             print(f"[ai-worker] 警告：删除 inflight 失败：{e}", file=sys.stderr)
+        if sys.platform == "win32" and liveness_lock is not None:
+            # Windows cannot delete a file this process still holds open; release it first.
+            liveness_lock.close()
+            liveness_lock = None
         try:
             liveness_path.unlink(missing_ok=True)
         except OSError as e:
@@ -3472,8 +3497,6 @@ def reserve_write_slot(stack, seat, workdir):
 
 
 def dispatch(inflight: Path | None, attempt: dict, *, before_execute=None) -> int:
-    if sys.argv[1:2] not in (["doctor"], ["enable"]) and dispatch_unavailable():
-        return 64
     with contextlib.ExitStack() as stack:
         try:
             return _dispatch(inflight, attempt, before_execute=before_execute, stack=stack)

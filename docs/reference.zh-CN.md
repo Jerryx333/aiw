@@ -549,6 +549,14 @@ Codex 主会话自己改文件，不调用 `aiw write`；独立评审用 `aiw re
 
 项目规则先匹配；`disable` 关掉全局规则；文件写坏了自动回落全局，不影响派单。
 
+## Windows
+
+Windows 上用 `bin\aiw.cmd`（由 `aiw_windows.py` 按与 `bin/aiw` 相同的子命令分流）。入口打开 Python UTF-8 模式，aiw 的输出、工具和 agent-use 的输入输出都按 UTF-8。
+
+- 能用（2026-11-27 在 Windows 11 实测）：按运行表直接派单，`kind=cli` 与 `kind=agent_use` 行的写单、`--ro`、`--text`、`--no-fallback`；超时用 `taskkill /T /F` 杀整棵进程树（孙进程不残留）；写任务名额、inflight 标记、运行目录与 `output.md`；工作目录带中文和空格。命令：`capabilities`、`status`、`help`。`--attach`、`--chain`、`--worktree`、`doctor`、`enable`、`off`/`on`、`rate`、`gc` 走同一路径，未在 Windows 实测；用量统计在 Windows 上没有入口。
+- scratch：子进程的 `TEMP`、`TMP` 与 `TMPDIR` 一起指向本单 scratch；清理不跟随目录链接。
+- 暂不支持（明确报「Windows 暂不支持…」并返回 64）：`--background` 与 `bg`、`--deliver`、`--verify`（验收命令要 bash）、`slot`、`flow`/`panel`/`map`/`goal`、跑腿、`track`、`sync` 及看板类命令；`capabilities` 在 Windows 上不声明 `background-notify-v1`、`scratch-delivery-v1` 和这几个参数。转发（aiw-remote）、`--worktree` 的忽略文件写时复制、`nice` 降优先级是 macOS 专属，Windows 上跳过。
+
 ## 多台机器
 
 多台机器使用同一份公开仓库，每台机器保留自己的本地配置。建议将本地配置和个人规则放在私人同步仓库，并软链到各机的 `~/.config/aiw/`。

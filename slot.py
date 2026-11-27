@@ -69,7 +69,8 @@ def open_lock(path):
     fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o666)
     lock = os.fdopen(fd, "a")
     try:
-        os.fchmod(fd, 0o666)
+        if hasattr(os, "fchmod"):  # Windows has no fchmod; the lock file keeps its ACL.
+            os.fchmod(fd, 0o666)
     except OSError:
         pass  # 已有共享锁可能属于另一用户。
     return lock
