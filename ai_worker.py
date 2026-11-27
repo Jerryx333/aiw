@@ -310,6 +310,14 @@ def child_env(scratch=None, *, cache_write=False) -> dict:
     return env
 
 
+def _windows_link(path) -> bool:
+    """A symlink or junction (any reparse point): Path.is_junction only exists from Python 3.12."""
+    try:
+        return bool(getattr(os.lstat(path), 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
+    except OSError:
+        return True
+
+
 def cleanup_scratch(scratch: Path) -> None:
     """只清本单临时内容；保留 deliver 供后续交付和核对，不跟随软链。"""
     from delivery import directory
@@ -318,12 +326,12 @@ def cleanup_scratch(scratch: Path) -> None:
     if sys.platform == 'win32':
         # No dir_fd on Windows. Refuse a scratch that is itself a link; rmtree removes
         # junctions and symlinks inside without following them.
-        if scratch.is_symlink() or getattr(scratch, 'is_junction', lambda: False)() or not scratch.is_dir():
+        if scratch.is_symlink() or _windows_link(scratch) or not scratch.is_dir():
             return
         for entry in os.scandir(scratch):
             if entry.name == 'deliver':
                 continue
-            if entry.is_dir(follow_symlinks=False) and not entry.is_symlink():
+            if entry.is_dir(follow_symlinks=False) and not entry.is_symlink() and not _windows_link(entry.path):
                 shutil.rmtree(entry.path)
             elif entry.is_dir():
                 # A directory link: remove the link, not its target. Windows removes directory

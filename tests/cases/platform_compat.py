@@ -110,6 +110,16 @@ def platform_windows(root):
                 pass
             else:
                 raise AssertionError("a vanished tree must raise ProcessLookupError")
+        # Any other failure reads as killpg would: gone if the leader is gone, otherwise denied.
+        for alive, expected in ((False, ProcessLookupError), (True, PermissionError)):
+            with patch.object(subprocess, "run", return_value=subprocess.CompletedProcess([], 1)), \
+                    patch.object(platform_process, "_windows_alive", return_value=alive):
+                try:
+                    platform_process.kill_tree(42, signal.SIGTERM)
+                except expected:
+                    pass
+                else:
+                    raise AssertionError(f"taskkill 1 with alive={alive} must raise {expected.__name__}")
         # Signal 0 only asks; it must never run taskkill.
         with patch.object(subprocess, "run") as run, patch.object(platform_process, "_windows_alive", side_effect=[True, False]):
             platform_process.kill_tree(42, 0)
@@ -138,6 +148,18 @@ def platform_windows(root):
         ai_worker.cleanup_scratch(scratch)
         assert sorted(p.name for p in scratch.iterdir()) == ["deliver"]
         assert (scratch / "deliver" / "keep.txt").exists() and (outside / "target.txt").exists()
+        # A scratch that is a junction (any reparse point; Path.is_junction is 3.12+) is left alone.
+        (scratch / "x.txt").write_text("x")
+        with patch.object(ai_worker, "_windows_link", side_effect=lambda path: Path(path) == scratch):
+            ai_worker.cleanup_scratch(scratch)
+        assert (scratch / "x.txt").exists()
+        import stat as stat_module, types
+        reparse = types.SimpleNamespace(st_file_attributes=stat_module.FILE_ATTRIBUTE_REPARSE_POINT)
+        with patch.object(ai_worker.os, "lstat", return_value=reparse):
+            assert ai_worker._windows_link("junction")
+        with patch.object(ai_worker.os, "lstat", return_value=types.SimpleNamespace(st_file_attributes=0)):
+            assert not ai_worker._windows_link("folder")
+        (scratch / "x.txt").unlink()
         environment = ai_worker.scratch_environment(scratch)
         assert environment["TEMP"] == environment["TMP"] == environment["TMPDIR"] == str(scratch)
 

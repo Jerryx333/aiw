@@ -18,10 +18,12 @@ def kill_tree(pgid, sig):
             return None
         result = subprocess.run(["taskkill", "/PID", str(pgid), "/T", "/F"],
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        # 128: no such process. The tree is already gone.
-        if result.returncode == 128:
+        # 128: no such process. The tree is already gone. Any other failure is read the way killpg
+        # reports it, so callers' (ProcessLookupError, PermissionError) handling covers Windows too.
+        if result.returncode == 128 or result.returncode and not _windows_alive(pgid):
             raise ProcessLookupError(pgid)
-        result.check_returncode()
+        if result.returncode:
+            raise PermissionError(pgid)
         return result
     return os.killpg(pgid, sig)
 
