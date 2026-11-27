@@ -47,7 +47,7 @@ IMPORT_LINE = '@~/.claude/aiw/CLAUDE.md'
 PERSONAL_LINE = '@~/.config/aiw/CLAUDE.personal.md'
 BEGIN = '<!-- aiw:begin（install.sh 生成，勿手改） -->'
 END = '<!-- aiw:end -->'
-BOARD_INSTALL = '未安装 aiw-board（可选组件）：见 https://github.com/Jerryx333/aiw-board ，安装后确保 aiw-board 在 PATH 中'
+BOARD_INSTALL = 'aiw-board 是可选组件，未安装时看板功能不可用'
 REINSTALL = '重跑 install.sh'
 
 

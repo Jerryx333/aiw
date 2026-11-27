@@ -217,7 +217,7 @@ def doctor_config():
             run('✓ Claude 派单钩子', '✓ CLAUDE.md 引入', '✓ 安装链接 aiw',
                 '✓ 安装链接 aiw', '✓ Codex 信任 [0:0]', '✓ Codex AGENTS 标记块',
                 '无法确认是否过期', '· 仓库状态：不是 git 仓库', '⚠ aiw-board 转发',
-                '未安装 aiw-board（可选组件）：见 https://github.com/Jerryx333/aiw-board ，安装后确保 aiw-board 在 PATH 中')
+                'aiw-board 是可选组件，未安装时看板功能不可用')
         config.write_text('')
         run('⚠ Codex 信任', 'Codex 会跳过这个钩子')
         trusted(enabled=False)

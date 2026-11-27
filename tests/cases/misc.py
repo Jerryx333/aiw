@@ -419,7 +419,7 @@ def test_aiw_board_forward():
             check(r.returncode == 0, r.stdout + r.stderr)
             check(args.read_text().splitlines() == expected, '转发参数错误')
         board.unlink()
-        install = '未安装 aiw-board（可选组件）：见 https://github.com/Jerryx333/aiw-board ，安装后确保 aiw-board 在 PATH 中'
+        install = 'aiw-board 是可选组件，未安装时看板功能不可用'
         for subcommand in ('board', 'statusline'):
             r = sh(cmd + [subcommand], env=env)
             check(r.returncode == 127 and 'aiw-board' in r.stderr and install in r.stderr, r.stdout + r.stderr)

@@ -101,7 +101,7 @@ case "$cmd" in
       fi
       exec aiw-board "$@"
     fi
-    echo '未安装 aiw-board（可选组件）：见 https://github.com/Jerryx333/aiw-board ，安装后确保 aiw-board 在 PATH 中' >&2
+    echo 'aiw-board 是可选组件，未安装时看板功能不可用' >&2
     exit 127
     ;;
   tokens)   shift; exec "$PY" "${H}/tokens.py" "$@" ;;
